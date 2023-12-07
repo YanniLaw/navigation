@@ -51,7 +51,7 @@ bool GridPath::getPath(float* potential, double start_x, double start_y, double 
     int c = 0;
     int ns = xs_ * ys_;
     
-    while (getIndex(current.first, current.second) != start_index) {
+    while (getIndex(current.first, current.second) != start_index) { // 其實就是八鄰域找勢場值最小的
         float min_val = 1e10;
         int min_x = 0, min_y = 0;
         for (int xd = -1; xd <= 1; xd++) {

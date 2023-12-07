@@ -230,7 +230,7 @@ namespace navfn {
       return false;
     }
 
-    //clear the starting cell within the costmap because we know it can't be an obstacle
+    //clear the starting cell within the costmap because we know it can't be an obstacle 先清掉起始点栅格，必定是没有障碍物的
     clearRobotCell(start, mx, my);
 
     //make sure to resize the underlying array that Navfn uses
@@ -271,7 +271,7 @@ namespace navfn {
     double best_sdist = DBL_MAX;
 
     p.pose.position.y = goal.pose.position.y - tolerance;
-
+    // 在目标位置附近2*tolerance的矩形范围内，寻找与目标位置最近的、且不是障碍物的cell，作为全局路径实际的终点
     while(p.pose.position.y <= goal.pose.position.y + tolerance){
       p.pose.position.x = goal.pose.position.x - tolerance;
       while(p.pose.position.x <= goal.pose.position.x + tolerance){

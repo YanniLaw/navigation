@@ -107,7 +107,7 @@ namespace navfn {
   // create nav fn buffers 
   //
 
-  NavFn::NavFn(int xs, int ys)
+  NavFn::NavFn(int xs, int ys) // xs:cell number of x , ys:cell number of y  
   {  
     // create cell arrays
     costarr = NULL;
@@ -221,7 +221,7 @@ namespace navfn {
 
 
   //
-  // set up cost array, usually from ROS
+  // set up cost array, usually from ROS 根据代价值生成无向权重图
   //
 
   void
@@ -236,9 +236,10 @@ namespace navfn {
           for (int j=0; j<nx; j++, k++, cmap++, cm++)
           {
             // This transforms the incoming cost values:
-            // COST_OBS                 -> COST_OBS (incoming "lethal obstacle")
-            // COST_OBS_ROS             -> COST_OBS (incoming "inscribed inflated obstacle")
+            // COST_OBS                 -> COST_OBS (incoming "lethal obstacle") 机器人中心与网格中心重合
+            // COST_OBS_ROS             -> COST_OBS (incoming "inscribed inflated obstacle") 网格中心位于机器人内切轮廓内
             // values in range 0 to 252 -> values from COST_NEUTRAL to COST_OBS_ROS.
+            // 数组costarr，元素范围在50~254之间
             *cm = COST_OBS;
             int v = *cmap;
             if (v < COST_OBS_ROS)
@@ -265,7 +266,7 @@ namespace navfn {
           for (int j=0; j<nx; j++, k++, cmap++, cm++)
           {
             *cm = COST_OBS;
-            if (i<7 || i > ny-8 || j<7 || j > nx-8)
+            if (i<7 || i > ny-8 || j<7 || j > nx-8) // 不处理边界
               continue;	// don't do borders
             int v = *cmap;
             if (v < COST_OBS_ROS)
@@ -360,19 +361,20 @@ namespace navfn {
 
 
   // Set up navigation potential arrays for new propagation
-
+ // 对于每个新的规划，需要重新设置potential数组为默认值(potential数组的值即为起点到各个节点的最优行走代价值)
   void
     NavFn::setupNavFn(bool keepit)
     {
       // reset values in propagation arrays
       for (int i=0; i<ns; i++)
       {
-        potarr[i] = POT_HIGH;
+        potarr[i] = POT_HIGH; // 代价表初始化为最大值，默认起点到所有节点的行走代价值都为最大
         if (!keepit) costarr[i] = COST_NEUTRAL;
-        gradx[i] = grady[i] = 0.0;
+        gradx[i] = grady[i] = 0.0; // 初始化x,y方向的梯度表
       }
 
-      // outer bounds of cost array
+      // outer bounds of cost array（四周边界的处理）
+      // 将地图封闭起来，防止轨迹规划出边界
       COSTTYPE *pc;
       pc = costarr;
       for (int i=0; i<nx; i++)
@@ -387,21 +389,21 @@ namespace navfn {
       for (int i=0; i<ny; i++, pc+=nx)
         *pc = COST_OBS;
 
-      // priority buffers
-      curT = COST_OBS;
-      curP = pb1; 
-      curPe = 0;
-      nextP = pb2;
-      nextPe = 0;
-      overP = pb3;
-      overPe = 0;
-      memset(pending, 0, ns*sizeof(bool));
+      // priority buffers 优先级缓冲区
+      curT = COST_OBS; // 当前的传播界限
+      curP = pb1; // 当前用于传播的节点索引数组
+      curPe = 0; // 当前用于传播的节点的数量
+      nextP = pb2; // 用于下个传播过程的节点索引数组
+      nextPe = 0; // 用于下个传播过程的节点数量
+      overP = pb3; // 传播界限外的节点索引数组
+      overPe = 0; // 传播界限外的节点数量
+      memset(pending, 0, ns*sizeof(bool)); // 设置所有的节点状态都为非(即等待状态)
 
-      // set goal
-      int k = goal[0] + goal[1]*nx;
+      // set goal，将目标点栅格所在的potential置为0，并且将上下左右四个栅格节点放入curP,改状态为等待状态
+      int k = goal[0] + goal[1]*nx; // 目标栅格
       initCost(k,0);
 
-      // find # of obstacle cells
+      // find # of obstacle cells 统计障碍物节点的数量
       pc = costarr;
       int ntot = 0;
       for (int i=0; i<ns; i++, pc++)
@@ -414,11 +416,11 @@ namespace navfn {
 
 
   // initialize a goal-type cost for starting propagation
-
+  // 初始化结束过后，curP里面就保存了目标点四个邻居的索引，curPe = 4
   void
     NavFn::initCost(int k, float v)
     {
-      potarr[k] = v;
+      potarr[k] = v; // 
       push_cur(k+1);
       push_cur(k-1);
       push_cur(k-nx);
@@ -432,6 +434,7 @@ namespace navfn {
   // Planar-wave update calculation from two lowest neighbors in a 4-grid
   // Quadratic approximation to the interpolated value 
   // No checking of bounds here, this function should be fast
+  // n: 给定的cell索引
   //
 
 #define INVSQRT2 0.707106781
@@ -439,7 +442,7 @@ namespace navfn {
   inline void
     NavFn::updateCell(int n)
     {
-      // get neighbors
+      // get neighbors, 获取四个最近邻节点的potential值(势场值)
       float u,d,l,r;
       l = potarr[n-1];
       r = potarr[n+1];		
@@ -449,54 +452,59 @@ namespace navfn {
       //	 potarr[n], l, r, u, d);
       //  ROS_INFO("[Update] cost: %d\n", costarr[n]);
 
-      // find lowest, and its lowest neighbor
+      // find lowest, and its lowest neighbor寻找上下和左右两组potential的最低值
       float ta, tc;
       if (l<r) tc=l; else tc=r;
       if (u<d) ta=u; else ta=d;
 
-      // do planar wave update
+      // do planar wave update 为什么不先检查这个???
+      // 当权重图显示当前节点为障碍物时，不继续向此节点传播，意味着此节点的最优potential为最大默认值，
+      // 即保证了轨迹规划不穿过障碍物
       if (costarr[n] < COST_OBS)	// don't propagate into obstacles
       {
         float hf = (float)costarr[n]; // traversability factor
-        float dc = tc-ta;		// relative cost between ta,tc
-        if (dc < 0) 		// ta is lowest
+        float dc = tc-ta;		// relative cost between ta,tc // potential(势场值)
+        if (dc < 0) 		// ta is lowest ,ta保存最低势场值
         {
           dc = -dc;
           ta = tc;
         }
 
-        // calculate new potential
+        // calculate new potential，计算新的potential
+        // cost大小与cell离障碍物的远近对应，更大的cost对应更大的Potential，并且障碍物点不更新Potential，使得其值停留在无限大，故Potential值的大小也能反映点与障碍物的接近程度。
         float pot;
         if (dc >= hf)		// if too large, use ta-only update
-          pot = ta+hf;
+          pot = ta+hf; // 当前点Potential值=四周最小的Potential值+当前点cost值 这种传播过程中cost的累加造成Potential值的上升能够反映离目标点的远近。
         else			// two-neighbor interpolation update
         {
           // use quadratic approximation
           // might speed this up through table lookup, but still have to 
           //   do the divide
           float d = dc/hf;
-          float v = -0.2301*d*d + 0.5307*d + 0.7040;
+          float v = -0.2301*d*d + 0.5307*d + 0.7040; // https://github.com/ros-planning/navigation/issues/890
           pot = ta + hf*v;
         }
 
         //      ROS_INFO("[Update] new pot: %d\n", costarr[n]);
 
         // now add affected neighbors to priority blocks
+        // 新计算的potential值比当前栅格的potential小(表明当前传播路线更优)，那么就更新该值，否则 不更新
         if (pot < potarr[n])
         {
-          float le = INVSQRT2*(float)costarr[n-1];
+          float le = INVSQRT2*(float)costarr[n-1]; // 周围四个栅格的代价值
           float re = INVSQRT2*(float)costarr[n+1];
           float ue = INVSQRT2*(float)costarr[n-nx];
           float de = INVSQRT2*(float)costarr[n+nx];
           potarr[n] = pot;
-          if (pot < curT)	// low-cost buffer block 
+          if (pot < curT)	// low-cost buffer block  // 当当前节点的potential值小于传播界限时，将上下左右四个节点传递给nextP
           {
+           // 如果上下左右四个节点的权重值加上当前节点的potential值小于这四个节点的potential值时，才加入nexP数组进行这四个节点potential值的更新，否则没有必要更新
             if (l > pot+le) push_next(n-1);
             if (r > pot+re) push_next(n+1);
             if (u > pot+ue) push_next(n-nx);
             if (d > pot+de) push_next(n+nx);
           }
-          else			// overflow block
+          else			// overflow block // 否则传递给overP
           {
             if (l > pot+le) push_over(n-1);
             if (r > pot+re) push_over(n+1);
@@ -580,7 +588,7 @@ namespace navfn {
           float dist = hypot(x-start[0], y-start[1])*(float)COST_NEUTRAL;
 
           potarr[n] = pot;
-          pot += dist;
+          pot += dist; // 加上个距离再进行判定，可以使得距离目标点更近的方向的点会优先放入next中
           if (pot < curT)	// low-cost buffer block 
           {
             if (l > pot+le) push_next(n-1);
@@ -610,26 +618,28 @@ namespace navfn {
   //   or until it runs out of cells to update,
   //   or until the Start cell is found (atStart = true)
   //
-
+  // 这个函数以目标点（Potential值已初始化为0）为起点，向整张地图的cell传播，填充potarr数组，直到找到起始点为止，
+  // potarr数组的数据能够反映“走了多远”和“附近的障碍情况”，为最后的路径计算提供了依据
   bool
     NavFn::propNavFnDijkstra(int cycles, bool atStart)	
     {
-      int nwv = 0;			// max priority block size
-      int nc = 0;			// number of cells put into priority blocks
+      int nwv = 0;			// max priority block size，记录一次传播的最大节点数量
+      int nc = 0;			// number of cells put into priority blocks，起始就是记录所有访问过的节点数量
       int cycle = 0;		// which cycle we're on
 
-      // set up start cell
+      // set up start cell，起始点，跳出的判断
       int startCell = start[1]*nx + start[0];
 
+      // 此处cycles大小不用太纠结，设置足够大就行，能保证传播到目标点，到了目标点之后，会自动break掉
       for (; cycle < cycles; cycle++) // go for this many cycles, unless interrupted
       {
-        // 
+        // 如果当前用于传播的节点的数量和接下来用于传播的节点的数量都为０，则直接退出传播过程，表示传播不下去了(可能有无法越过的障碍物或者其他情况)
         if (curPe == 0 && nextPe == 0) // priority blocks empty
           break;
 
         // stats
         nc += curPe;
-        if (curPe > nwv)
+        if (curPe > nwv) // 更新一次传播节点数量的最大值
           nwv = curPe;
 
         // reset pending flags on current priority buffer
@@ -642,7 +652,7 @@ namespace navfn {
         pb = curP; 
         i = curPe;
         while (i-- > 0)		
-          updateCell(*pb++);
+          updateCell(*pb++); // 
 
         if (displayInt > 0 &&  (cycle % displayInt) == 0)
           displayFn(this);
@@ -654,7 +664,7 @@ namespace navfn {
         curP = nextP;
         nextP = pb;
 
-        // see if we're done with this priority level
+        // see if we're done with this priority level，此时表明next里面的也用完了
         if (curPe == 0)
         {
           curT += priInc;	// increment priority threshold
@@ -779,7 +789,8 @@ namespace navfn {
   //  1. Stuck at same index position
   //  2. Doesn't get near goal
   //  3. Surrounded by high potentials
-  //
+  // 通过potential的分布，从目标点开始沿着梯度下降的方向搜索到起点 
+  // st 起点
 
   int
     NavFn::calcPath(int n, int *st)
@@ -798,9 +809,9 @@ namespace navfn {
       }
 
       // set up start position at cell
-      // st is always upper left corner for 4-point bilinear interpolation 
+      // st is always upper left corner for 4-point bilinear interpolation (4点双线性插值)
       if (st == NULL) st = start;
-      int stc = st[1]*nx + st[0];
+      int stc = st[1]*nx + st[0]; // 当前处理的点
 
       // set up offset
       float dx=0;
@@ -812,7 +823,7 @@ namespace navfn {
       {
         // check if near goal
         int nearest_point=std::max(0,std::min(nx*ny-1,stc+(int)round(dx)+(int)(nx*round(dy))));
-        if (potarr[nearest_point] < COST_NEUTRAL)
+        if (potarr[nearest_point] < COST_NEUTRAL) // 通过potential的值来判断是否接近到了目标点
         {
           pathx[npath] = (float)goal[0];
           pathy[npath] = (float)goal[1];
@@ -830,7 +841,7 @@ namespace navfn {
         pathy[npath] = stc/nx + dy;
         npath++;
 
-        bool oscillation_detected = false;
+        bool oscillation_detected = false; // 当前点的前几个路径为同一个点，说明规划的路径发生了震荡
         if( npath > 2 &&
             pathx[npath-1] == pathx[npath-3] &&
             pathy[npath-1] == pathy[npath-3] )
@@ -839,10 +850,11 @@ namespace navfn {
           oscillation_detected = true;
         }
 
-        int stcnx = stc+nx;
-        int stcpx = stc-nx;
+        int stcnx = stc+nx; // 当前点的下面一个点的索引
+        int stcpx = stc-nx; // 当前点的上面一个点的索引
 
         // check for potentials at eight positions near cell
+        // 如果当前节点的八邻域有障碍物代价值 或者 发生了震荡
         if (potarr[stc] >= POT_HIGH ||
             potarr[stc+1] >= POT_HIGH ||
             potarr[stc-1] >= POT_HIGH ||
@@ -874,14 +886,14 @@ namespace navfn {
           if (potarr[st] < minp) {minp = potarr[st]; minc = st; }
           st++;
           if (potarr[st] < minp) {minp = potarr[st]; minc = st; }
-          stc = minc;
+          stc = minc; // 找八邻域中potential值最小的节点
           dx = 0;
           dy = 0;
 
           ROS_DEBUG("[Path] Pot: %0.1f  pos: %0.1f,%0.1f",
               potarr[stc], pathx[npath-1], pathy[npath-1]);
 
-          if (potarr[stc] >= POT_HIGH)
+          if (potarr[stc] >= POT_HIGH) // 还是没有找到好的，进入死胡同了(周围都是障碍物???)
           {
             ROS_DEBUG("[PathCalc] No path found, high potential");
             //savemap("navfn_highpot");
@@ -890,17 +902,18 @@ namespace navfn {
         }
 
         // have a good gradient here
+        // 如果有好的梯度，则直接计算梯度，并沿着梯度方向查找下一个节点 其实就是周围八邻域没有障碍物或者没有发生震荡
         else			
         {
 
-          // get grad at four positions near cell
-          gradCell(stc);
+          // get grad at four positions near cell，计算四邻域矩形的梯度(以当前点为左上角)
+          gradCell(stc); // 梯度做了归一化处理，所以计算出来的梯度的范围为(0,1)
           gradCell(stc+1);
           gradCell(stcnx);
           gradCell(stcnx+1);
 
 
-          // get interpolated gradient
+          // get interpolated gradient，插值梯度
           float x1 = (1.0-dx)*gradx[stc] + dx*gradx[stc+1];
           float x2 = (1.0-dx)*gradx[stcnx] + dx*gradx[stcnx+1];
           float x = (1.0-dy)*x1 + dy*x2; // interpolated x
@@ -927,6 +940,7 @@ namespace navfn {
           dy += y*ss;
 
           // check for overflow
+          // 总体要求往势场值下降的方向移动，移动的方式与梯度的计算有关，x为左减右，y为上减下
           if (dx > 1.0) { stc++; dx -= 1.0; }
           if (dx < -1.0) { stc--; dx += 1.0; }
           if (dy > 1.0) { stc+=nx; dy -= 1.0; }
@@ -964,7 +978,7 @@ namespace navfn {
       float dx = 0.0;
       float dy = 0.0;
 
-      // check for in an obstacle
+      // check for in an obstacle，当前格子为障碍物
       if (cv >= POT_HIGH) 
       {
         if (potarr[n-1] < POT_HIGH)
@@ -978,7 +992,7 @@ namespace navfn {
           dy = COST_OBS;
       }
 
-      else				// not in an obstacle
+      else				// not in an obstacle，计算当前格子与x，y方向上相邻两个格子的势场值的差值
       {
         // dx calc, average to sides
         if (potarr[n-1] < POT_HIGH)
@@ -998,7 +1012,7 @@ namespace navfn {
       if (norm > 0)
       {
         norm = 1.0/norm;
-        gradx[n] = norm*dx;
+        gradx[n] = norm*dx; // 梯度归一化
         grady[n] = norm*dy;
       }
       return norm;

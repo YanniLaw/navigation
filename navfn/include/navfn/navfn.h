@@ -167,9 +167,9 @@ positions at about 1/2 cell resolution; else returns 0.
       float getLastPathCost();      /**< Return cost of path found the last time A* was called */
 
       /** cell arrays */
-      COSTTYPE *costarr;		/**< cost array in 2D configuration space */
-      float   *potarr;		/**< potential array, navigation function potential */
-      bool    *pending;		/**< pending cells during propagation */
+      COSTTYPE *costarr;		/**< cost array in 2D configuration space */ // 记录全局costmap信息
+      float   *potarr;		/**< potential array, navigation function potential */ // 存储各celll的potential值
+      bool    *pending;		/**< pending cells during propagation */ //
       int nobs;			/**< number of obstacle cells */
 
       /** block priority buffers */
@@ -234,7 +234,7 @@ positions at about 1/2 cell resolution; else returns 0.
       bool propNavFnAstar(int cycles); /**< returns true if start point found */
 
       /** gradient and paths */
-      float *gradx, *grady;		/**< gradient arrays, size of potential array */
+      float *gradx, *grady;		/**< gradient arrays, size of potential array */ // 用于生成路径
       float *pathx, *pathy;		/**< path points, as subpixel cell coordinates */
       int npath;			/**< number of path points */
       int npathbuf;			/**< size of pathx, pathy buffers */

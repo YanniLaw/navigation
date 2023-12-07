@@ -46,7 +46,7 @@ void set_angle(geometry_msgs::PoseStamped* pose, double angle)
 {
   tf2::Quaternion q;
   q.setRPY(0, 0, angle);
-  tf2::convert(q, pose->pose.orientation);
+  tf2::convert(q, pose->pose.orientation); // 设置pose.orientation
 }
 
 void OrientationFilter::processPath(const geometry_msgs::PoseStamped& start, 
@@ -78,18 +78,18 @@ void OrientationFilter::processPath(const geometry_msgs::PoseStamped& start,
                 set_angle(&path[i], angles::normalize_angle(tf2::getYaw(path[i].pose.orientation) + M_PI_2));
             }
             break;
-        case INTERPOLATE:
+        case INTERPOLATE: // 根据路径起始点与目标点的角度进行线性差值(这种应该适用于比较短的路径)
             path[0].pose.orientation = start.pose.orientation;
             interpolate(path, 0, n-1);
             break;
         case FORWARDTHENINTERPOLATE:
             for(int i=0;i<n-1;i++){
-                setAngleBasedOnPositionDerivative(path, i);
+                setAngleBasedOnPositionDerivative(path, i); // 先使用前向差分方法计算每个路径点的角度
             }
             
             int i=n-3;
             const double last = tf2::getYaw(path[i].pose.orientation);
-            while( i>0 ){
+            while( i>0 ){ // 找到与最后一个点角度超过一定阈值的路径点
                 const double new_angle = tf2::getYaw(path[i-1].pose.orientation);
                 double diff = fabs(angles::shortest_angular_distance(new_angle, last));
                 if( diff>0.35)
@@ -103,7 +103,8 @@ void OrientationFilter::processPath(const geometry_msgs::PoseStamped& start,
             break;           
     }
 }
-    
+
+// 基于窗口前后n个轨迹点的正切值作为轨迹角度，在轨迹突变的情况下可能表现不是很好    
 void OrientationFilter::setAngleBasedOnPositionDerivative(std::vector<geometry_msgs::PoseStamped>& path, int index)
 {
   int index0 = std::max(0, index - window_size_);
