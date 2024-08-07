@@ -57,7 +57,7 @@ public:
    * @brief This is called by the LayeredCostmap to poll this plugin as to how
    *        much of the costmap it needs to update. Each layer can increase
    *        the size of this bounds.
-   *
+   * LayeredCostmap调用这个函数来询问这个插件需要更新多少costmap。每一层都可以增加这个边界的大小。
    * For more details, see "Layered Costmaps for Context-Sensitive Navigation",
    * by Lu et. Al, IROS 2014.
    */
@@ -66,14 +66,14 @@ public:
 
   /**
    * @brief Actually update the underlying costmap, only within the bounds
-   *        calculated during UpdateBounds().
+   *        calculated during UpdateBounds(). 更新底层costmap
    */
   virtual void updateCosts(Costmap2D& master_grid, int min_i, int min_j, int max_i, int max_j) {}
 
-  /** @brief Stop publishers. */
+  /** @brief Stop publishers. 禁用*/
   virtual void deactivate() {}
 
-  /** @brief Restart publishers if they've been stopped. */
+  /** @brief Restart publishers if they've been stopped. 激活 */
   virtual void activate() {}
 
   virtual void reset() {}
@@ -88,7 +88,7 @@ public:
    *
    *        A layer's current state should be managed by the protected
    *        variable current_.
-   * @return Whether the data in the layer is up to date.
+   * @return Whether the data in the layer is up to date. 检查以确保Layer中的所有数据都是最新的。
    */
   bool isCurrent() const
   {
@@ -136,9 +136,9 @@ protected:
    * tf_, name_, and layered_costmap_ will all be set already when this is called. */
   virtual void onInitialize() {}
 
-  LayeredCostmap* layered_costmap_;
-  bool current_;
-  bool enabled_;
+  LayeredCostmap* layered_costmap_; // 通过该指针获取到对主图层master map的操作。没有这个指针，所有基于Layer继承下去的地图的类，都无法操作master map
+  bool current_; // layer的数据是否都是最新的
+  bool enabled_;  ///< Currently this var is managed by subclasses. TODO: make this managed by this class and/or container class.
   std::string name_;
   tf2_ros::Buffer *tf_;
 

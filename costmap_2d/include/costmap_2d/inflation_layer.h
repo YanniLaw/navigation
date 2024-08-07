@@ -67,11 +67,15 @@ public:
       index_(i), x_(x), y_(y), src_x_(sx), src_y_(sy)
   {
   }
-  unsigned int index_;
-  unsigned int x_, y_;
-  unsigned int src_x_, src_y_;
+  unsigned int index_;  // 在costmap的一维索引
+  unsigned int x_, y_;  // 在costmap的二维索引
+  unsigned int src_x_, src_y_;  // 距离当前栅格最近的障碍物在costmap的栅格索引
 };
 
+/*
+* 插件类
+* inflationLayer没有维护真正的地图数据所以只继承于Layer，该层所谓的地图层的概念，仅仅是操作master map的数据，Layer提供了操作master map的途径
+*/
 class InflationLayer : public Layer
 {
 public:
@@ -86,7 +90,7 @@ public:
         delete[] seen_;
   }
 
-  virtual void onInitialize();
+  virtual void onInitialize(); // overwrite function
   virtual void updateBounds(double robot_x, double robot_y, double robot_yaw, double* min_x, double* min_y,
                             double* max_x, double* max_y);
   virtual void updateCosts(costmap_2d::Costmap2D& master_grid, int min_i, int min_j, int max_i, int max_j);
@@ -101,17 +105,21 @@ public:
   /** @brief  Given a distance, compute a cost.
    * @param  distance The distance from an obstacle in cells
    * @return A cost value for the distance */
+  // 根据该点离其最近障碍物的距离来计算costmap损失值，是一个指数衰减关系。传入的distance表示栅格距离
   virtual inline unsigned char computeCost(double distance) const
   {
     unsigned char cost = 0;
     if (distance == 0)
-      cost = LETHAL_OBSTACLE;
+      cost = LETHAL_OBSTACLE; // 距离为0，则cost为LETHAL_OBSTACLE（254）
     else if (distance * resolution_ <= inscribed_radius_)
-      cost = INSCRIBED_INFLATED_OBSTACLE;
-    else
+      cost = INSCRIBED_INFLATED_OBSTACLE;  // 距离小于机器人内切半径，则cost为INSCRIBED_INFLATED_OBSTACLE（253）
+    else // 距离比内切半径远， 则距离障碍物越远cost取值越低
     {
       // make sure cost falls off by Euclidean distance
       double euclidean_distance = distance * resolution_;
+      // 到实际障碍物的距离在内切圆半径到膨胀半径之间的所有cell可以使用如下公式来计算膨胀代价：
+      // exp(-1.0 * cost_scaling_factor * (distance_from_obstacle - inscribed_radius)) * (costmap_2d::INSCRIBED_INFLATED_OBSTACLE - 1),
+      // 由于在公式中cost_scaling_factor被乘了一个负数，所以增大比例因子反而会降低代价。
       double factor = exp(-1.0 * weight_ * (euclidean_distance - inscribed_radius_));
       cost = (unsigned char)((INSCRIBED_INFLATED_OBSTACLE - 1) * factor);
     }
@@ -129,15 +137,15 @@ protected:
   virtual void onFootprintChanged();
   boost::recursive_mutex* inflation_access_;
 
-  double resolution_;
-  double inflation_radius_;
-  double inscribed_radius_;
+  double resolution_;         // 分辨率
+  double inflation_radius_;   // 膨胀半径(实际值)
+  double inscribed_radius_;   // 内切半径
   double weight_;
   bool inflate_unknown_;
 
 private:
   /**
-   * @brief  Lookup pre-computed distances
+   * @brief  Lookup pre-computed distances，查找预先计算的距离
    * @param mx The x coordinate of the current cell
    * @param my The y coordinate of the current cell
    * @param src_x The x coordinate of the source cell
@@ -170,24 +178,34 @@ private:
   void deleteKernels();
   void inflate_area(int min_i, int min_j, int max_i, int max_j, unsigned char* master_grid);
 
+  // 将世界距离转换为栅格距离
   unsigned int cellDistance(double world_dist)
   {
     return layered_costmap_->getCostmap()->cellDistance(world_dist);
   }
 
+  /**
+   * @brief  Given an index of a cell in the costmap, place it into a list pending for obstacle inflation
+   * @param  grid The costmap
+   * @param  index The index of the cell
+   * @param  mx The x coordinate of the cell (can be computed from the index, but saves time to store it)
+   * @param  my The y coordinate of the cell (can be computed from the index, but saves time to store it)
+   * @param  src_x The x index of the obstacle point inflation started at
+   * @param  src_y The y index of the obstacle point inflation started at
+   */
   inline void enqueue(unsigned int index, unsigned int mx, unsigned int my,
                       unsigned int src_x, unsigned int src_y);
 
-  unsigned int cell_inflation_radius_;
-  unsigned int cached_cell_inflation_radius_;
-  std::map<double, std::vector<CellData> > inflation_cells_;
+  unsigned int cell_inflation_radius_;  // 栅格膨胀半径
+  unsigned int cached_cell_inflation_radius_;   // 缓存栅格膨胀半径
+  std::map<double, std::vector<CellData> > inflation_cells_;  // 膨胀栅格
 
   bool* seen_;
-  int seen_size_;
+  int seen_size_; // 可视尺寸，其实就是栅格地图的一维大小
 
   unsigned char** cached_costs_;
   double** cached_distances_;
-  double last_min_x_, last_min_y_, last_max_x_, last_max_y_;
+  double last_min_x_, last_min_y_, last_max_x_, last_max_y_; // 上次地图边界
 
   dynamic_reconfigure::Server<costmap_2d::InflationPluginConfig> *dsrv_;
   void reconfigureCB(costmap_2d::InflationPluginConfig &config, uint32_t level);

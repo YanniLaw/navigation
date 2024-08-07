@@ -43,7 +43,7 @@
 
 namespace costmap_2d
 {
-
+// 地图数据实际放在Costmap2D // 这里，只有NO_INFORMATION为无效值，其他均为有效值
 class CostmapLayer : public Layer, public Costmap2D
 {
 public:
@@ -78,6 +78,7 @@ protected:
    *
    * TrueOverwrite means every value from this layer
    * is written into the master grid.
+   * TrueOverwrite表示该层的每个值(不管它是不是有效值)都被写进主图层
    */
   void updateWithTrueOverwrite(costmap_2d::Costmap2D& master_grid, int min_i, int min_j, int max_i, int max_j);
 
@@ -87,6 +88,7 @@ protected:
    *
    * Overwrite means every valid value from this layer
    * is written into the master grid (does not copy NO_INFORMATION)
+   * 只把有效值写入主图层，不拷贝NO_INFORMATION
    */
   void updateWithOverwrite(costmap_2d::Costmap2D& master_grid, int min_i, int min_j, int max_i, int max_j);
 
@@ -98,6 +100,7 @@ protected:
    * and this layer's value. If the master value is NO_INFORMATION,
    * it is overwritten. If the layer's value is NO_INFORMATION,
    * the master value does not change.
+   * 将当前图层大于主图层的有效代价值(无效则不会写入)写入主图层(即使主图层是无效值)
    */
   void updateWithMax(costmap_2d::Costmap2D& master_grid, int min_i, int min_j, int max_i, int max_j);
 
@@ -112,6 +115,7 @@ protected:
    *
    * If the sum value is larger than INSCRIBED_INFLATED_OBSTACLE,
    * the master value is set to (INSCRIBED_INFLATED_OBSTACLE - 1).
+   * 如果主图层存在无效值，则用当前图层的有效值覆盖主图层的无效值，否则设置为他们的代价和
    */
   void updateWithAddition(costmap_2d::Costmap2D& master_grid, int min_i, int min_j, int max_i, int max_j);
 

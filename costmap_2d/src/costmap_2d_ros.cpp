@@ -88,6 +88,7 @@ Costmap2DROS::Costmap2DROS(const std::string& name, tf2_ros::Buffer& tf) :
   ros::Time last_error = ros::Time::now();
   std::string tf_error;
   // we need to make sure that the transform between the robot base frame and the global frame is available
+  // 首先需要确认全局坐标系和机器人坐标系之间的变换是可用的
   while (ros::ok()
       && !tf_.canTransform(global_frame_, robot_base_frame_, ros::Time(), ros::Duration(0.1), &tf_error))
   {
@@ -103,21 +104,36 @@ Costmap2DROS::Costmap2DROS(const std::string& name, tf2_ros::Buffer& tf) :
     tf_error.clear();
   }
 
-  // check if we want a rolling window version of the costmap
+  // check if we want a rolling window version of the costmap，滑动窗口
   bool rolling_window, track_unknown_space, always_send_full_costmap;
-  private_nh.param("rolling_window", rolling_window, false);
+  private_nh.param("rolling_window", rolling_window, false); // 是否使用动态窗口，默认为false，在静态的全局地图中，地图不会变化
   private_nh.param("track_unknown_space", track_unknown_space, false);
-  private_nh.param("always_send_full_costmap", always_send_full_costmap, false);
+  private_nh.param("always_send_full_costmap", always_send_full_costmap, false); // 是否发布全部代价地图，默认false，只会发布部分的代价地图，加载全图耗费计算资源
 
   layered_costmap_ = new LayeredCostmap(global_frame_, rolling_window, track_unknown_space);
 
+  // 默认情况下加载的全局代价地图是由静态地图层、 障碍层和膨胀层构成,局部代价地图只有障碍层和膨胀层
+  // 在costmap的框架中，各种类型的图层都是以插件的形式加载的。 各个图层都将记录在图层管理器layered_costmap_中
   if (!private_nh.hasParam("plugins"))
   {
     loadOldParameters(private_nh);
   } else {
     warnForOldParameters(private_nh);
   }
-
+  /*
+    # global_costmap_params.yaml
+        - {name: static_layer,
+          type: "costmap_2d::StaticLayer"}
+        - {name: obstacle_layer,
+          type: "costmap_2d::VoxelLayer"}
+        - {name: inflation_layer,
+          type: "costmap_2d::InflationLayer"}
+    # lobal_costmap_params.yaml
+        - {name: obstacle_layer,
+          type: "costmap_2d::VoxelLayer"}
+        - {name: inflation_layer,
+          type: "costmap_2d::InflationLayer"}
+  */
   if (private_nh.hasParam("plugins"))
   {
     XmlRpc::XmlRpcValue my_list;
@@ -403,7 +419,7 @@ void Costmap2DROS::movementCB(const ros::TimerEvent &event)
 
   geometry_msgs::PoseStamped new_pose;
 
-  if (!getRobotPose(new_pose))
+  if (!getRobotPose(new_pose)) // 首先获取机器人当前位姿
   {
     ROS_WARN_THROTTLE(1.0, "Could not get robot pose, cancelling reconfiguration");
   }
@@ -412,7 +428,7 @@ void Costmap2DROS::movementCB(const ros::TimerEvent &event)
 void Costmap2DROS::mapUpdateLoop(double frequency)
 {
   ros::NodeHandle nh;
-  ros::Rate r(frequency);
+  ros::Rate r(frequency); // 地图更新循环的频率由updtae_frequency参数进行控制
   while (nh.ok() && !map_update_thread_shutdown_)
   {
     #ifdef HAVE_SYS_TIME_H
@@ -440,12 +456,13 @@ void Costmap2DROS::mapUpdateLoop(double frequency)
       ros::Time now = ros::Time::now();
       if (last_publish_ + publish_cycle < now)
       {
-        publisher_->publishCostmap();
+        publisher_->publishCostmap(); // 根据地图更新的范围边界，通过Costmap2DPublisher发布更新的地图信息
         last_publish_ = now;
       }
     }
     r.sleep();
-    // make sure to sleep for the remainder of our cycle time
+    // make sure to sleep for the remainder of our cycle time 休眠掉剩余的循环周期时间
+    // 前面的运算花费了太多的时间，运算性能不足
     if (r.cycleTime() > ros::Duration(1 / frequency))
       ROS_WARN("Map update loop missed its desired rate of %.4fHz... the loop actually took %.4f seconds", frequency,
                r.cycleTime().toSec());
@@ -464,13 +481,13 @@ void Costmap2DROS::updateMap()
              y = pose.pose.position.y,
              yaw = tf2::getYaw(pose.pose.orientation);
 
-      layered_costmap_->updateMap(x, y, yaw);
+      layered_costmap_->updateMap(x, y, yaw); // 更新各图层的地图数据
 
       geometry_msgs::PolygonStamped footprint;
       footprint.header.frame_id = global_frame_;
       footprint.header.stamp = ros::Time::now();
       transformFootprint(x, y, yaw, padded_footprint_, footprint);
-      footprint_pub_.publish(footprint);
+      footprint_pub_.publish(footprint); // 将机器人在global_frame_（全局坐标系）下的footprint发布出去
 
       initialized_ = true;
     }
@@ -536,6 +553,7 @@ void Costmap2DROS::resetLayers()
   Costmap2D* top = layered_costmap_->getCostmap();
   top->resetMap(0, 0, top->getSizeInCellsX(), top->getSizeInCellsY());
   std::vector < boost::shared_ptr<Layer> > *plugins = layered_costmap_->getPlugins();
+  //调用各层的reset函数对各层进行重置
   for (vector<boost::shared_ptr<Layer> >::iterator plugin = plugins->begin(); plugin != plugins->end();
       ++plugin)
   {
@@ -583,6 +601,8 @@ bool Costmap2DROS::getRobotPose(geometry_msgs::PoseStamped& global_pose) const
     return false;
   }
   // check global_pose timeout
+  // tf转换之间所能容忍的最大延时，如果tf树没有以期望速度被更新，那么导航功能包集将会让机器人停止。
+  // 因为Costmap2DROS假定全局坐标系，基座坐标系和传感器源之间的转换有联系且是最新的
   if (!global_pose.header.stamp.isZero() && current_time.toSec() - global_pose.header.stamp.toSec() > transform_tolerance_)
   {
     ROS_WARN_THROTTLE(1.0,

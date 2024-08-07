@@ -50,6 +50,16 @@
 namespace costmap_2d
 {
 
+/*
+* 插件类
+* 继承自CostmapLayer类，实现了Layer类定义的虚函数。
+* 继承于CostmapLayer,因为有自己的地图，Costmap2D提供了存储地图的父类，CostmapLayer提供了一些对地图的操作方法。
+* 其初始化函数中订阅了map消息，所以必须要有mapserver提供map给它才行
+
+* 关于该层数据的更新，如果不是滑动窗口类型,那么坐标框架就是和mapserver提供的map主题是一样的，只需要将订阅的数据copy过来更新自己的Costmap2D的数据成员就可以了， 
+* 如果是滑动窗口,那么the master_grid is unlikely to have same coordinates as this layer， Copy map data given proper transformations。
+* 即使是滑动窗口也是会利用全局图map提供的数据的。
+*/
 class StaticLayer : public CostmapLayer
 {
 public:
@@ -82,9 +92,9 @@ private:
   std::string global_frame_;  ///< @brief The global frame for the costmap
   std::string map_frame_;  /// @brief frame that map is located in
   bool subscribe_to_updates_;
-  bool map_received_;
-  bool has_updated_data_;
-  unsigned int x_, y_, width_, height_;
+  bool map_received_; // 接收到了地图信息
+  bool has_updated_data_;  // 更新数据
+  unsigned int x_, y_, width_, height_; // 地图尺寸
   bool track_unknown_space_;
   bool use_maximum_;
   bool first_map_only_;      ///< @brief Store the first static map and reuse it on reinitializing

@@ -59,6 +59,11 @@
 namespace costmap_2d
 {
 
+/*
+* 插件类
+* 继承自CostmapLayer类，实现了Layer类定义的虚函数。
+* 继承于CostmapLayer,因为有自己的地图，Costmap2D提供了存储地图的父类，CostmapLayer提供了一些对地图的操作方法。
+*/
 class ObstacleLayer : public CostmapLayer
 {
 public:
@@ -154,8 +159,10 @@ protected:
 
   laser_geometry::LaserProjection projector_;  ///< @brief Used to project laser scans into point clouds
 
+  // 可能有几个扫描数据的来源，所以用到vector，里面的每一个元素对应一个观察源，用于存放观察源的相关数据
   std::vector<boost::shared_ptr<message_filters::SubscriberBase> > observation_subscribers_;  ///< @brief Used for the observation message filters
   std::vector<boost::shared_ptr<tf2_ros::MessageFilterBase> > observation_notifiers_;  ///< @brief Used to make sure that transforms are available for each sensor
+  // 三个缓冲区数组，用于存放三类缓冲区：观察缓冲区、mark缓冲区、clear缓冲区
   std::vector<boost::shared_ptr<costmap_2d::ObservationBuffer> > observation_buffers_;  ///< @brief Used to store observations from various sensors
   std::vector<boost::shared_ptr<costmap_2d::ObservationBuffer> > marking_buffers_;  ///< @brief Used to store observation buffers used for marking obstacles
   std::vector<boost::shared_ptr<costmap_2d::ObservationBuffer> > clearing_buffers_;  ///< @brief Used to store observation buffers used for clearing obstacles
@@ -163,7 +170,7 @@ protected:
   // Used only for testing purposes
   std::vector<costmap_2d::Observation> static_clearing_observations_, static_marking_observations_;
 
-  bool rolling_window_;
+  bool rolling_window_; // 是否是滑动窗口
   dynamic_reconfigure::Server<costmap_2d::ObstaclePluginConfig> *dsrv_;
 
   int combination_method_;
