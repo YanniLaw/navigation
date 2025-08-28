@@ -236,6 +236,7 @@ namespace navfn {
           for (int j=0; j<nx; j++, k++, cmap++, cm++)
           {
             // This transforms the incoming cost values:
+            // 将机器人内切轮廓内的所有栅格都设置为障碍物 代价
             // COST_OBS                 -> COST_OBS (incoming "lethal obstacle") 机器人中心与网格中心重合
             // COST_OBS_ROS             -> COST_OBS (incoming "inscribed inflated obstacle") 网格中心位于机器人内切轮廓内
             // values in range 0 to 252 -> values from COST_NEUTRAL to COST_OBS_ROS.
@@ -811,7 +812,7 @@ namespace navfn {
       // set up start position at cell
       // st is always upper left corner for 4-point bilinear interpolation (4点双线性插值)
       if (st == NULL) st = start;
-      int stc = st[1]*nx + st[0]; // 当前处理的点
+      int stc = st[1]*nx + st[0]; // stc是当前处理的点
 
       // set up offset
       float dx=0;
@@ -913,7 +914,11 @@ namespace navfn {
           gradCell(stcnx+1);
 
 
-          // get interpolated gradient，插值梯度
+          // get interpolated gradient，双线性插值梯度
+          // 为什么用到双线性插值？某些算法中我们需要求出某个非格点位置的梯度（偏导数），用于路径优化或方向选择，直接取最近格点的梯度会产生较大误差，所以通常使用插值方法来估计
+          // 1. 非格点控制：路径点通常不会恰好落在格点上，需要获取连续梯度。
+          // 2. 避免局部抖动：直接用最近格点梯度会出现离散跳变。
+          // 3. 平滑运动：在梯度下降或者路径跟随算法中，平滑的梯度方向保证轨迹连续
           float x1 = (1.0-dx)*gradx[stc] + dx*gradx[stc+1];
           float x2 = (1.0-dx)*gradx[stcnx] + dx*gradx[stcnx+1];
           float x = (1.0-dy)*x1 + dy*x2; // interpolated x
@@ -964,7 +969,7 @@ namespace navfn {
   //
 
   // calculate gradient at a cell
-  // positive value are to the right and down
+  // positive value are to the right and down 正值为向右或者向下的方向
   float				
     NavFn::gradCell(int n)
     {
@@ -993,7 +998,7 @@ namespace navfn {
       }
 
       else				// not in an obstacle，计算当前格子与x，y方向上相邻两个格子的势场值的差值
-      {
+      { // 中心差分计算梯度信息
         // dx calc, average to sides
         if (potarr[n-1] < POT_HIGH)
           dx += potarr[n-1]- cv;	
