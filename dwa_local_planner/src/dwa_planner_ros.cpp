@@ -283,6 +283,7 @@ namespace dwa_local_planner {
     // update plan in dwa_planner even if we just stop and rotate, to allow checkTrajectory
     dp_->updatePlanAndLocalCosts(current_pose_, transformed_plan, costmap_ros_->getRobotFootprint());
 
+    // 检查当前机器人是否到达目标位置(非姿态)
     if (latchedStopRotateController_.isPositionReached(&planner_util_, current_pose_)) {
       //publish an empty plan because we've reached our goal position
       std::vector<geometry_msgs::PoseStamped> local_plan;
@@ -298,7 +299,7 @@ namespace dwa_local_planner {
           odom_helper_,
           current_pose_,
           [this](auto pos, auto vel, auto vel_samples){ return dp_->checkTrajectory(pos, vel, vel_samples); });
-    } else {
+    } else { // 正常的DWA流程
       bool isOk = dwaComputeVelocityCommands(current_pose_, cmd_vel);
       if (isOk) {
         publishGlobalPlan(transformed_plan);

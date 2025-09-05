@@ -264,7 +264,8 @@ namespace dwa_local_planner {
     double sq_dist =
         (pos[0] - goal_pose.pose.position.x) * (pos[0] - goal_pose.pose.position.x) +
         (pos[1] - goal_pose.pose.position.y) * (pos[1] - goal_pose.pose.position.y);
-
+    // DWA 希望机器人“车头”已经对准目标，而不是只考虑机器人几何中心
+    // 所以这里在目标点前方，虚拟一个“前鼻子目标点”。避免机器人在目标点附近因为需要 掉头180° 而产生不稳定的控制
     // we want the robot nose to be drawn to its final position
     // (before robot turns towards goal orientation), not the end of the
     // path for the robot center. Choosing the final position after
@@ -282,10 +283,11 @@ namespace dwa_local_planner {
     // keeping the nose on the path
     if (sq_dist > forward_point_distance_ * forward_point_distance_ * cheat_factor_) {
       alignment_costs_.setScale(path_distance_bias_);
-      // costs for robot being aligned with path (nose on path, not ju
+      // costs for robot being aligned with path (nose on path, not ju  保持机器人“车头”对齐路径
       alignment_costs_.setTargetPoses(global_plan_);
     } else {
       // once we are close to goal, trying to keep the nose close to anything destabilizes behavior.
+      // 防止机器人在终点附近强行摆头对齐，造成不稳定
       alignment_costs_.setScale(0.0);
     }
   }

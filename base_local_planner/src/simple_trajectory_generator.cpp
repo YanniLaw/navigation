@@ -58,25 +58,25 @@ void SimpleTrajectoryGenerator::initialise(
 
 
 void SimpleTrajectoryGenerator::initialise(
-    const Eigen::Vector3f& pos,
-    const Eigen::Vector3f& vel,
-    const Eigen::Vector3f& goal,
+    const Eigen::Vector3f& pos,   // 当前位置
+    const Eigen::Vector3f& vel,   // 当前速度
+    const Eigen::Vector3f& goal,  // 当前目标点
     base_local_planner::LocalPlannerLimits* limits,
     const Eigen::Vector3f& vsamples,
     bool discretize_by_time) {
   /*
    * We actually generate all velocity sample vectors here, from which to generate trajectories later on
    */
-  double max_vel_th = limits->max_vel_theta;
+  double max_vel_th = limits->max_vel_theta; // 角速度限制
   double min_vel_th = -1.0 * max_vel_th;
   discretize_by_time_ = discretize_by_time;
-  Eigen::Vector3f acc_lim = limits->getAccLimits();
+  Eigen::Vector3f acc_lim = limits->getAccLimits(); // 加速度限制
   pos_ = pos;
   vel_ = vel;
   limits_ = limits;
   next_sample_index_ = 0;
   sample_params_.clear();
-
+  // 速度限制
   double min_vel_x = limits->min_vel_x;
   double max_vel_x = limits->max_vel_x;
   double min_vel_y = limits->min_vel_y;
@@ -164,7 +164,7 @@ bool SimpleTrajectoryGenerator::nextTrajectory(Trajectory &comp_traj) {
     if (generateTrajectory(
         pos_,
         vel_,
-        sample_params_[next_sample_index_],
+        sample_params_[next_sample_index_], // 对应的速度参数
         comp_traj)) {
       result = true;
     }
@@ -204,6 +204,7 @@ bool SimpleTrajectoryGenerator::generateTrajectory(
     num_steps = ceil(sim_time_ / sim_granularity_);
   } else {
     //compute the number of steps we must take along this trajectory to be "safe"
+    // 在sim_time_ 这段时间内，线速度跟角速度都是保持一致的
     double sim_time_distance = vmag * sim_time_; // the distance the robot would travel in sim_time if it did not change velocity
     double sim_time_angle = fabs(sample_target_vel[2]) * sim_time_; // the angle the robot would rotate in sim_time
     num_steps =
@@ -215,18 +216,19 @@ bool SimpleTrajectoryGenerator::generateTrajectory(
     return false;
   }
 
-  //compute a timestep
+  //compute a timestep 计算时间步长
   double dt = sim_time_ / num_steps;
   traj.time_delta_ = dt;
 
   Eigen::Vector3f loop_vel;
-  if (continued_acceleration_) {
+  if (continued_acceleration_) { // 非DWA情况下
     // assuming the velocity of the first cycle is the one we want to store in the trajectory object
+    // 考虑加速度限制，逐步逼近目标速度
     loop_vel = computeNewVelocities(sample_target_vel, vel, limits_->getAccLimits(), dt);
     traj.xv_     = loop_vel[0];
     traj.yv_     = loop_vel[1];
     traj.thetav_ = loop_vel[2];
-  } else {
+  } else { // DWA情况,速度恒定
     // assuming sample_vel is our target velocity within acc limits for one timestep
     loop_vel = sample_target_vel;
     traj.xv_     = sample_target_vel[0];
@@ -240,7 +242,7 @@ bool SimpleTrajectoryGenerator::generateTrajectory(
     //add the point to the trajectory so we can draw it later if we want
     traj.addPoint(pos[0], pos[1], pos[2]);
 
-    if (continued_acceleration_) {
+    if (continued_acceleration_) { // 非DWA情况下
       //calculate velocities
       loop_vel = computeNewVelocities(sample_target_vel, loop_vel, limits_->getAccLimits(), dt);
       //ROS_WARN_NAMED("Generator", "Flag: %d, Loop_Vel %f, %f, %f", continued_acceleration_, loop_vel[0], loop_vel[1], loop_vel[2]);

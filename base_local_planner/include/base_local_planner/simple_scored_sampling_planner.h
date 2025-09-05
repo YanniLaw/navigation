@@ -98,7 +98,7 @@ private:
   std::vector<TrajectorySampleGenerator*> gen_list_;
   std::vector<TrajectoryCostFunction*> critics_;
 
-  int max_samples_;
+  int max_samples_; // 生成的最大轨迹数目
 };
 
 

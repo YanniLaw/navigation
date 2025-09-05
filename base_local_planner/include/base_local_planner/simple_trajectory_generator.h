@@ -151,9 +151,9 @@ protected:
   bool continued_acceleration_;
   bool discretize_by_time_;
 
-  double sim_time_, sim_granularity_, angular_sim_granularity_;
+  double sim_time_, sim_granularity_, angular_sim_granularity_; // 仿真时长与颗粒度
   bool use_dwa_;
-  double sim_period_; // only for dwa
+  double sim_period_; // only for dwa 根据控制频率计算出的仿真间隔
 };
 
 } /* namespace base_local_planner */

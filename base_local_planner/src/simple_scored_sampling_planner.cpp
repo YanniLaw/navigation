@@ -47,6 +47,7 @@ namespace base_local_planner {
     critics_ = critics;
   }
 
+  // 解释下最后的这个得分: <0: 危险，应该丢弃该轨迹; >=0: 安全，得分越接近于0，轨迹就最好
   double SimpleScoredSamplingPlanner::scoreTrajectory(Trajectory& traj, double best_traj_cost) {
     double traj_cost = 0;
     int gen_id = 0;
@@ -55,8 +56,8 @@ namespace base_local_planner {
       if (score_function_p->getScale() == 0) {
         continue;
       }
-      double cost = score_function_p->scoreTrajectory(traj);
-      if (cost < 0) {
+      double cost = score_function_p->scoreTrajectory(traj); // 用不同的评价函数对轨迹进行打分
+      if (cost < 0) { // 轨迹打分不满足要求，函数直接返回负数得分
         ROS_DEBUG("Velocity %.3lf, %.3lf, %.3lf discarded by cost function  %d with cost: %f", traj.xv_, traj.yv_, traj.thetav_, gen_id, cost);
         traj_cost = cost;
         break;
@@ -67,6 +68,7 @@ namespace base_local_planner {
       traj_cost += cost;
       if (best_traj_cost > 0) {
         // since we keep adding positives, once we are worse than the best, we will stay worse
+        // 当前计算的得分比已经算出来的最好的得分还要大，那么就不再进行其他代价的打分啦！
         if (traj_cost > best_traj_cost) {
           break;
         }
@@ -86,7 +88,7 @@ namespace base_local_planner {
     int count, count_valid;
     for (std::vector<TrajectoryCostFunction*>::iterator loop_critic = critics_.begin(); loop_critic != critics_.end(); ++loop_critic) {
       TrajectoryCostFunction* loop_critic_p = *loop_critic;
-      if (loop_critic_p->prepare() == false) {
+      if (loop_critic_p->prepare() == false) { // 准备一些东西 主要是map grid
         ROS_WARN("A scoring function failed to prepare");
         return false;
       }
@@ -96,27 +98,28 @@ namespace base_local_planner {
       count = 0;
       count_valid = 0;
       TrajectorySampleGenerator* gen_ = *loop_gen;
-      while (gen_->hasMoreTrajectories()) {
-        gen_success = gen_->nextTrajectory(loop_traj);
+      while (gen_->hasMoreTrajectories()) { // 其实就是判断是不是还可以生成打分的轨迹
+        gen_success = gen_->nextTrajectory(loop_traj); // 生成待打分的轨迹
         if (gen_success == false) {
           // TODO use this for debugging
           continue;
         }
-        loop_traj_cost = scoreTrajectory(loop_traj, best_traj_cost);
+        loop_traj_cost = scoreTrajectory(loop_traj, best_traj_cost); // 对该轨迹进行打分
         if (all_explored != NULL) {
           loop_traj.cost_ = loop_traj_cost;
           all_explored->push_back(loop_traj);
         }
 
-        if (loop_traj_cost >= 0) {
+        if (loop_traj_cost >= 0) { // 当前轨迹安全
           count_valid++;
+          // 首次进入该循环  或者 当前轨迹得分比已更新的best轨迹得分更好
           if (best_traj_cost < 0 || loop_traj_cost < best_traj_cost) {
             best_traj_cost = loop_traj_cost;
             best_traj = loop_traj;
           }
         }
         count++;
-        if (max_samples_ > 0 && count >= max_samples_) {
+        if (max_samples_ > 0 && count >= max_samples_) { // 如果有设置最大轨迹数，那么就只处理这么多轨迹了
           break;
         }        
       }

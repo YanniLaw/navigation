@@ -126,6 +126,7 @@ namespace base_local_planner {
       double sq_dist = 0;
 
       //we need to loop to a point on the plan that is within a certain distance of the robot
+      // 从path中找距离机器人当前pose一定距离内的一个path index，并不是找最近的index
       while(i < (unsigned int)global_plan.size()) {
         double x_diff = robot_pose.pose.position.x - global_plan[i].pose.position.x;
         double y_diff = robot_pose.pose.position.y - global_plan[i].pose.position.y;
