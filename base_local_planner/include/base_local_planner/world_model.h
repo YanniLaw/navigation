@@ -55,16 +55,17 @@ namespace base_local_planner {
        * @brief  Subclass will implement this method to check a footprint at a given position and orientation for legality in the world
        * @param  position The position of the robot in world coordinates
        * @param  footprint The specification of the footprint of the robot in world coordinates
-       * @param  inscribed_radius The radius of the inscribed circle of the robot
-       * @param  circumscribed_radius The radius of the circumscribed circle of the robot
+       * @param  inscribed_radius The radius of the inscribed circle of the robot 内切圆半径
+       * @param  circumscribed_radius The radius of the circumscribed circle of the robot 外接圆半径
        * @return Positive if all the points lie outside the footprint, negative otherwise:
-       *          -1 if footprint covers at least a lethal obstacle cell, or
-       *          -2 if footprint covers at least a no-information cell, or
-       *          -3 if footprint is partially or totally outside of the map
+       *          -1 if footprint covers at least a lethal obstacle cell, or // footprint至少覆盖了一个值为254的致命障碍物栅格
+       *          -2 if footprint covers at least a no-information cell, or // footprint至少覆盖了一个无信息栅格
+       *          -3 if footprint is partially or totally outside of the map // footprint在地图外
        */
       virtual double footprintCost(const geometry_msgs::Point& position, const std::vector<geometry_msgs::Point>& footprint,
           double inscribed_radius, double circumscribed_radius) = 0;
 
+      // 这里输入的footprint_spec是位于base_link坐标系下
       double footprintCost(double x, double y, double theta, const std::vector<geometry_msgs::Point>& footprint_spec, double inscribed_radius = 0.0, double circumscribed_radius=0.0){
 
         double cos_th = cos(theta);

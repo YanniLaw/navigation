@@ -93,6 +93,7 @@ namespace base_local_planner {
     }
 
     //we also need to connect the first point in the footprint to the last point
+    // 首尾两个点也要连接起来
     //get the cell coord of the last point
     if(!costmap_.worldToMap(footprint.back().x, footprint.back().y, x0, y0))
       return -3.0;
@@ -116,7 +117,7 @@ namespace base_local_planner {
   double CostmapModel::lineCost(int x0, int x1, int y0, int y1) const {
     double line_cost = 0.0;
     double point_cost = -1.0;
-
+    // Bresenham算法计算直线上的每个点
     for( LineIterator line( x0, y0, x1, y1 ); line.isValid(); line.advance() )
     {
       point_cost = pointCost( line.getX(), line.getY() ); //Score the current point
