@@ -96,6 +96,7 @@ double MapGridCostFunction::scoreTrajectory(Trajectory &traj) {
     }
 
     //we won't allow trajectories that go off the map... shouldn't happen that often anyways
+    // 理论上这句不会发生，因为我们只预测一小段轨迹
     if ( ! costmap_->worldToMap(px, py, cell_x, cell_y)) {
       //we're off the map
       ROS_WARN("Off Map %f, %f", px, py);
@@ -112,13 +113,13 @@ double MapGridCostFunction::scoreTrajectory(Trajectory &traj) {
     }
 
     switch( aggregationType_ ) {
-    case Last:
+    case Last: // 只取最后一个点的代价 (需要前面都没有碰撞才会到这一步)
       cost = grid_dist;
       break;
-    case Sum:
+    case Sum: // 累加所有轨迹点的代价
       cost += grid_dist;
       break;
-    case Product:
+    case Product: // 连乘代价
       if (cost > 0) {
         cost *= grid_dist;
       }

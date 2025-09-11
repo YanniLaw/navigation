@@ -90,7 +90,7 @@ double ObstacleCostFunction::scoreTrajectory(Trajectory &traj) {
     if(f_cost < 0){
         return f_cost;
     }
-
+    // 对所有轨迹点代价求和，否则，取代价最大值(最危险的那个点)
     if(sum_scores_)
         cost +=  f_cost;
     else
@@ -99,11 +99,14 @@ double ObstacleCostFunction::scoreTrajectory(Trajectory &traj) {
   return cost;
 }
 
+// 根据轨迹的速度，决定是否要放大 footprint（高速度下 footprint 会按比例放大）
 double ObstacleCostFunction::getScalingFactor(Trajectory &traj, double scaling_speed, double max_trans_vel, double max_scaling_factor) {
   double vmag = hypot(traj.xv_, traj.yv_);
 
   //if we're over a certain speed threshold, we'll scale the robot's
   //footprint to make it either slow down or stay further from walls
+  // 如果速度小于阈值 scaling_speed，scale=1（不缩放）
+  // 速度越快，就线性放大 footprint，最多到 max_scaling_factor，规划器越保守，避免高速贴近障碍物
   double scale = 1.0;
   if (vmag > scaling_speed) {
     //scale up to the max scaling factor linearly... this could be changed later
@@ -117,7 +120,7 @@ double ObstacleCostFunction::footprintCost (
     const double& x,
     const double& y,
     const double& th,
-    double scale,
+    double scale, // 根据速度计算出来的缩放因子，根据速度动态放大 footprint 来增加安全性
     std::vector<geometry_msgs::Point> footprint_spec,
     costmap_2d::Costmap2D* costmap,
     base_local_planner::WorldModel* world_model) {

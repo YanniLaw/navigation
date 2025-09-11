@@ -80,7 +80,7 @@ private:
   std::vector<geometry_msgs::Point> footprint_spec_;
   base_local_planner::WorldModel* world_model_;
   double max_trans_vel_;
-  bool sum_scores_;
+  bool sum_scores_; // 是否累加所有轨迹点的cost
   //footprint scaling with velocity;
   double max_scaling_factor_, scaling_speed_;
 };

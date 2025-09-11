@@ -113,6 +113,7 @@ namespace base_local_planner{
       return false;
     }
 
+    // 类似dijstra，有更小的代价值就更新
     double new_target_dist = current_cell->target_dist + 1;
     if (new_target_dist < check_cell->target_dist) {
       check_cell->target_dist = new_target_dist;
@@ -130,6 +131,7 @@ namespace base_local_planner{
     }
   }
 
+  // 根据地图分辨率对输入的全局路径就行调整
   void MapGrid::adjustPlanResolution(const std::vector<geometry_msgs::PoseStamped>& global_plan_in,
       std::vector<geometry_msgs::PoseStamped>& global_plan_out, double resolution) {
     if (global_plan_in.size() == 0) {
@@ -145,6 +147,7 @@ namespace base_local_planner{
       double loop_x = global_plan_in[i].pose.position.x;
       double loop_y = global_plan_in[i].pose.position.y;
       double sqdist = (loop_x - last_x) * (loop_x - last_x) + (loop_y - last_y) * (loop_y - last_y);
+      // 路径点的间距大于栅格地图的分辨率，就进行插值
       if (sqdist > min_sq_resolution) {
         int steps = ceil((sqrt(sqdist)) / resolution);
         // add a points in-between
@@ -168,6 +171,7 @@ namespace base_local_planner{
   }
 
   //update what map cells are considered path based on the global_plan
+  // 让机器人整体贴近全局路径（全路径上的点都作为目标）
   void MapGrid::setTargetCells(const costmap_2d::Costmap2D& costmap,
       const std::vector<geometry_msgs::PoseStamped>& global_plan) {
     sizeCheck(costmap.getSizeInCellsX(), costmap.getSizeInCellsY());
@@ -184,19 +188,21 @@ namespace base_local_planner{
     unsigned int i;
     // put global path points into local map until we reach the border of the local map
     for (i = 0; i < adjusted_global_plan.size(); ++i) {
-      double g_x = adjusted_global_plan[i].pose.position.x;
+      double g_x = adjusted_global_plan[i].pose.position.x; // global pos
       double g_y = adjusted_global_plan[i].pose.position.y;
       unsigned int map_x, map_y;
+      // 遍历全局路径，把路径投影到局部地图
       if (costmap.worldToMap(g_x, g_y, map_x, map_y) && costmap.getCost(map_x, map_y) != costmap_2d::NO_INFORMATION) {
         MapCell& current = getCell(map_x, map_y);
         current.target_dist = 0.0;
         current.target_mark = true;
         path_dist_queue.push(&current);
         started_path = true;
-      } else if (started_path) {
+      } else if (started_path) { // 当遇到第一个不在局部地图内的点，并且之前已经 started_path == true
           break;
       }
     }
+    // 全局路径没有落入局部地图的情况
     if (!started_path) {
       ROS_ERROR("None of the %d first of %zu (%zu) points of the global plan were in the local costmap and free",
           i, adjusted_global_plan.size(), global_plan.size());
@@ -207,6 +213,8 @@ namespace base_local_planner{
   }
 
   //mark the point of the costmap as local goal where global_plan first leaves the area (or its last point)
+  // 只用一个 局部目标点，通常是 全局路径在 local costmap 范围内的最后一个点，作为机器人近期要追踪的目标 
+  // 避免机器人在局部规划时“盯着”太远的点，走不出局部地图; 给 DWA 或 TrajectoryPlanner 一个明确的短期目标，提高反应性
   void MapGrid::setLocalGoal(const costmap_2d::Costmap2D& costmap,
       const std::vector<geometry_msgs::PoseStamped>& global_plan) {
     sizeCheck(costmap.getSizeInCellsX(), costmap.getSizeInCellsY());
@@ -223,6 +231,7 @@ namespace base_local_planner{
       double g_x = adjusted_global_plan[i].pose.position.x;
       double g_y = adjusted_global_plan[i].pose.position.y;
       unsigned int map_x, map_y;
+      // 最后一个在 local map 的点，就是 局部目标点
       if (costmap.worldToMap(g_x, g_y, map_x, map_y) && costmap.getCost(map_x, map_y) != costmap_2d::NO_INFORMATION) {
         local_goal_x = map_x;
         local_goal_y = map_y;
@@ -238,6 +247,7 @@ namespace base_local_planner{
       return;
     }
 
+    // 在局部代价地图里找到一个局部目标点（local goal），并从这个点出发扩散代价
     queue<MapCell*> path_dist_queue;
     if (local_goal_x >= 0 && local_goal_y >= 0) {
       MapCell& current = getCell(local_goal_x, local_goal_y);
@@ -251,7 +261,12 @@ namespace base_local_planner{
   }
 
 
-
+  /**
+   * @brief 从路径上的点作为起始点（距离为 0）,按 BFS 层层向外扩展, 计算每个网格到路径的“最短栅格距离”（以栅格步长为单位），
+   * 遇到障碍物则赋予最大代价值
+   * @param dist_queue 输入的path 队列
+   * @param costmap 代价地图
+   */
   void MapGrid::computeTargetDistance(queue<MapCell*>& dist_queue, const costmap_2d::Costmap2D& costmap){
     MapCell* current_cell;
     MapCell* check_cell;
