@@ -265,7 +265,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
   costmap_ros_->getRobotPose(robot_pose);
   robot_pose_ = PoseSE2(robot_pose.pose);
     
-  // Get robot velocity
+  // Get robot velocity 机器人本体坐标系下
   geometry_msgs::PoseStamped robot_vel_tf;
   odom_helper_.getRobotVel(robot_vel_tf);
   robot_vel_.linear.x = robot_vel_tf.pose.position.x;
@@ -678,6 +678,8 @@ bool TebLocalPlannerROS::pruneGlobalPlan(const tf2_ros::Buffer& tf, const geomet
     // iterate plan until a pose close the robot is found
     std::vector<geometry_msgs::PoseStamped>::iterator it = global_plan.begin();
     std::vector<geometry_msgs::PoseStamped>::iterator erase_end = it;
+    // 从全局路径的开始朝后遍历，找出第一个距离机器人小于 dist_behind_robot 的路径点
+    // 这样的话 找到的这个路径点就一定是位于机器人后方的点
     while (it != global_plan.end())
     {
       double dx = robot.pose.position.x - it->pose.position.x;
@@ -744,6 +746,7 @@ bool TebLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
     double sq_dist = 1e10;
     
     //we need to loop to a point on the plan that is within a certain distance of the robot
+    // 找到离机器人最近的路径点
     bool robot_reached = false;
     for(int j=0; j < (int)global_plan.size(); ++j)
     {

@@ -37,7 +37,13 @@
 
 namespace costmap_2d
 {
-
+/**
+ * @brief 用于计算机器人 footprint 相对中心(0,0)的最小与最大外接半径，为碰撞检测和安全距离估计提供几何基础
+ * 
+ * @param footprint 足迹模型点集(多边形定点列表)
+ * @param min_dist 最短安全半径
+ * @param max_dist 最远外边界半径
+ */
 void calculateMinAndMaxDistances(const std::vector<geometry_msgs::Point>& footprint, double& min_dist, double& max_dist)
 {
   min_dist = std::numeric_limits<double>::max();

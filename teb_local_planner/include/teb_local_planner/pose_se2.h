@@ -88,7 +88,7 @@ public:
     */ 
   PoseSE2(double x, double y, double theta)
   {
-      _position.coeffRef(0) = x;
+      _position.coeffRef(0) = x; // coeffRef 返回 向量或矩阵中第 i 个元素的“引用”, operator() 可能会返回临时对象（只读）
       _position.coeffRef(1) = y;
       _theta = theta;
   }

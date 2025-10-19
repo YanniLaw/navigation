@@ -29,19 +29,25 @@
 
 #include <costmap_2d/costmap_math.h>
 
+// 计算点到线段的最短距离(采用向量投影法)
 double distanceToLine(double pX, double pY, double x0, double y0, double x1, double y1)
 {
-  double A = pX - x0;
+  // 假设三个点分别为P(px,py),A(x0,y0),B(x1,y1)
+  double A = pX - x0; // PA
   double B = pY - y0;
-  double C = x1 - x0;
+  double C = x1 - x0; // AB
   double D = y1 - y0;
 
-  double dot = A * C + B * D;
-  double len_sq = C * C + D * D;
-  double param = dot / len_sq;
+  double dot = A * C + B * D;     // PA * PB
+  double len_sq = C * C + D * D;  // |AB|模长
+  double param = dot / len_sq;    // 计算投影参数
 
-  double xx, yy;
-
+  double xx, yy; // 假设是投影点Q
+/* 分三种情况讨论:
+ 1. param < 0, 投影点 Q 在 A 外侧，最近点是 A，最短距离 = PA
+ 2. param > 1, 投影点 Q 在 B 外侧，最近点是 B, 最短距离 = PB
+ 3. param ∈ [0,1], 投影点 Q 在线段 AB 上, 最短距离 = PQ
+ */
   if (param < 0)
   {
     xx = x0;
@@ -52,7 +58,7 @@ double distanceToLine(double pX, double pY, double x0, double y0, double x1, dou
     xx = x1;
     yy = y1;
   }
-  else
+  else // Q = A + param * (B − A)
   {
     xx = x0 + param * C;
     yy = y0 + param * D;
