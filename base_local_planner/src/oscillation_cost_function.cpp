@@ -53,6 +53,13 @@ void OscillationCostFunction::setOscillationResetDist(double dist, double angle)
   oscillation_reset_angle_ = angle;
 }
 
+/**
+ * @brief 根据最后当前pose，最后选定的轨迹，以及限制的最小线速度，更新震荡的相关标志位
+ * 
+ * @param pos 机器人当前pose(world)
+ * @param traj 选定的最优轨迹
+ * @param min_vel_trans 限制的最小线速度
+ */
 void OscillationCostFunction::updateOscillationFlags(Eigen::Vector3f pos, base_local_planner::Trajectory* traj, double min_vel_trans) {
   if (traj->cost_ >= 0) {
     if (setOscillationFlags(traj, min_vel_trans)) {
