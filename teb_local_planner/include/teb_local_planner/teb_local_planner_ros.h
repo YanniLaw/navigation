@@ -425,12 +425,12 @@ private:
   bool custom_via_points_active_; //!< Keep track whether valid via-points have been received from via_points_sub_
   boost::mutex via_point_mutex_; //!< Mutex that locks the via_points container (multi-threaded)
 
-  PoseSE2 robot_pose_; //!< Store current robot pose
+  PoseSE2 robot_pose_; //!< Store current robot pose in odom frame
   PoseSE2 robot_goal_; //!< Store current robot goal
-  geometry_msgs::Twist robot_vel_; //!< Store current robot translational and angular velocity (vx, vy, omega)
+  geometry_msgs::Twist robot_vel_; //!< Store current robot translational and angular velocity (vx, vy, omega) in robot frame
   bool goal_reached_; //!< store whether the goal is reached or not
   ros::Time time_last_infeasible_plan_; //!< Store at which time stamp the last infeasible plan was detected
-  int no_infeasible_plans_; //!< Store how many times in a row the planner failed to find a feasible plan.
+  int no_infeasible_plans_; //!< Store how many times in a row the planner failed to find a feasible plan. 表示连续检测到“不可行轨迹”的次数
   ros::Time time_last_oscillation_; //!< Store at which time stamp the last oscillation was detected
   RotType last_preferred_rotdir_; //!< Store recent preferred turning direction
   geometry_msgs::Twist last_cmd_; //!< Store the last control command generated in computeVelocityCommands()
@@ -439,7 +439,7 @@ private:
   double robot_inscribed_radius_; //!< The radius of the inscribed circle of the robot (collision possible)
   double robot_circumscribed_radius; //!< The radius of the circumscribed circle of the robot
   
-  std::string global_frame_; //!< The frame in which the controller will run
+  std::string global_frame_; //!< The frame in which the controller will run (odom frame)
   std::string robot_base_frame_; //!< Used as the base frame id of the robot
   std::string name_; //!< For use with the ros nodehandle
     

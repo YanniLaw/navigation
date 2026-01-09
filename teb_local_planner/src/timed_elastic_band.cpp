@@ -109,7 +109,7 @@ void TimedElasticBand::addTimeDiff(double dt, bool fixed)
 
 void TimedElasticBand::addPoseAndTimeDiff(double x, double y, double angle, double dt)
 {
-  if (sizePoses() != sizeTimeDiffs())
+  if (sizePoses() != sizeTimeDiffs()) // timediff 数永远比 pose 少 1
   {
     addPose(x,y,angle,false);
     addTimeDiff(dt,false);
@@ -385,18 +385,33 @@ bool TimedElasticBand::initTrajectoryToGoal(const PoseSE2& start, const PoseSE2&
   return true;
 }
 
-
+/**
+ * @brief 把一条全局路径 plan 转成 TEB 内部的“带时间戳的离散轨迹”初值（一串 PoseSE2 + 一串相邻点的 dt），并且把起点和终点固定，让后续优化只“拉弹性带”来调整中间点和时间间隔。
+ *  初始化完成后的数据结构是什么样？
+    假设最后生成了 N 个 pose（含 start 和 goal）:
+    poses：[pose0=start, pose1, ..., pose_{N-1}=goal] 共有 N 个
+    timediffs：[dt0(0->1), dt1(1->2), ..., dt_{N-2}(N-2->N-1)] 共有 N-1 个
+    *** timediff 数永远比 pose 少 1 ***  ----> 这是 TEB 的基本结构 
+ * @param plan 转换到odom坐标系下的全局路径(裁剪后处于局部地图范围内)
+ * @param max_vel_x 
+ * @param max_vel_theta 
+ * @param estimate_orient 
+ * @param min_samples
+ * @param guess_backwards_motion 
+ * @return true 
+ * @return false 
+ */
 bool TimedElasticBand::initTrajectoryToGoal(const std::vector<geometry_msgs::PoseStamped>& plan, double max_vel_x, double max_vel_theta, bool estimate_orient, int min_samples, bool guess_backwards_motion)
 {
   
-  if (!isInit())
+  if (!isInit()) // 冷启动，固定起点和终点
   {
     PoseSE2 start(plan.front().pose);
     PoseSE2 goal(plan.back().pose);
     
     addPose(start); // add starting point with given orientation
     setPoseVertexFixed(0,true); // StartConf is a fixed constraint during optimization
-
+    // 只是初始化时的一个启发式猜测，并不是最终一定会倒车
     bool backwards = false;
     if (guess_backwards_motion && (goal.position()-start.position()).dot(start.orientationUnitVec()) < 0) // check if the goal is behind the start pose (w.r.t. start orientation)
         backwards = true;
@@ -405,7 +420,7 @@ bool TimedElasticBand::initTrajectoryToGoal(const std::vector<geometry_msgs::Pos
     for (int i=1; i<(int)plan.size()-1; ++i)
     {
         double yaw;
-        if (estimate_orient)
+        if (estimate_orient) // 用几何切线方向估计朝向
         {
             // get yaw from the orientation of the distance vector between pose_{i+1} and pose_{i}
             double dx = plan[i+1].pose.position.x - plan[i].pose.position.x;
@@ -419,7 +434,8 @@ bool TimedElasticBand::initTrajectoryToGoal(const std::vector<geometry_msgs::Pos
             yaw = tf::getYaw(plan[i].pose.orientation);
         }
         PoseSE2 intermediate_pose(plan[i].pose.position.x, plan[i].pose.position.y, yaw);
-        double dt = estimateDeltaT(BackPose(), intermediate_pose, max_vel_x, max_vel_theta);
+        // 这里的backpose就是i-1时刻的pose
+        double dt = estimateDeltaT(BackPose(), intermediate_pose, max_vel_x, max_vel_theta); // 先给一个可行的初值（按最大速度估 dt，按路径点给 pose）
         addPoseAndTimeDiff(intermediate_pose, dt);
     }
     
@@ -430,16 +446,18 @@ bool TimedElasticBand::initTrajectoryToGoal(const std::vector<geometry_msgs::Pos
       while (sizePoses() < min_samples-1) // subtract goal point that will be added later
       {
         // simple strategy: interpolate between the current pose and the goal
+        // 每次取 当前最后一个点 和 goal 的平均（相当于二分插值）， 反复插，直到点数够 
+        // 避免 TEB 点太少导致优化“自由度不够”或轨迹太粗糙（尤其是长距离、或者需要绕障时）
         PoseSE2 intermediate_pose = PoseSE2::average(BackPose(), goal);
         double dt = estimateDeltaT(BackPose(), intermediate_pose, max_vel_x, max_vel_theta);
         addPoseAndTimeDiff( intermediate_pose, dt ); // let the optimier correct the timestep (TODO: better initialization
       }
     }
     
-    // Now add final state with given orientation
+    // Now add final state with given orientation 目标点的位置/朝向在这个初始化里被当作硬约束
     double dt = estimateDeltaT(BackPose(), goal, max_vel_x, max_vel_theta);
     addPoseAndTimeDiff(goal, dt);
-    setPoseVertexFixed(sizePoses()-1,true); // GoalConf is a fixed constraint during optimization
+    setPoseVertexFixed(sizePoses()-1,true); // GoalConf is a fixed constraint during optimization ， timediff 数永远比 pose 少 1
   }
   else // size!=0
   {
@@ -551,18 +569,27 @@ int TimedElasticBand::findClosestTrajectoryPose(const Obstacle& obstacle, double
   return findClosestTrajectoryPose(obstacle.getCentroid(), distance);  
 }
 
-
+/**
+ * @brief 每个控制周期拿到新的起点/终点后，把旧的 TEB 轨迹“往前滚动”并裁剪掉已经走过的前段，同时更新首尾姿态，让后续优化从一个“接近当前状态”的初值继续优化，而不是冷启动重建整条轨迹。
+ * 随着机器人向前跑，把身后已经走过的“废弃路径点”剪掉（Prune），并将当前机器人最新的真实位置设为轨迹的“新起点”，同时更新终点
+ * @param new_start 可选的新起点（通常是机器人当前位姿或带速度的虚拟起点）
+ * @param new_goal 可选的新终点（局部目标/全局计划末端映射到局部）
+ * @param min_samples 要求 TEB 轨迹至少保留的采样点数（避免裁剪过头导致轨迹太短，优化不稳定）
+ */
 void TimedElasticBand::updateAndPruneTEB(boost::optional<const PoseSE2&> new_start, boost::optional<const PoseSE2&> new_goal, int min_samples)
 {
   // first and simple approach: change only start confs (and virtual start conf for inital velocity)
   // TEST if optimizer can handle this "hard" placement
 
-  if (new_start && sizePoses()>0)
+  if (new_start && sizePoses()>0) // 只有当传入了新起点且当前 TEB 有轨迹点才做“滚动裁剪”
   {    
     // find nearest state (using l2-norm) in order to prune the trajectory
-    // (remove already passed states)
-    double dist_cache = (new_start->position()- Pose(0).position()).norm();
+    // (remove already passed states) // new_start 现在的真实位置
+    double dist_cache = (new_start->position()- Pose(0).position()).norm(); // Pose(0) 上一帧规划的起点
     double dist;
+    // 搜索范围限制：
+    // 1. 最多往前找 10 个点 (lookahead)，防止搜索太远浪费算力。
+    // 2. 保证剩余的点数不小于 min_samples (防止把轨迹删光了)。
     int lookahead = std::min<int>( sizePoses()-min_samples, 10); // satisfy min_samples, otherwise max 10 samples
 
     int nearest_idx = 0;
@@ -572,7 +599,7 @@ void TimedElasticBand::updateAndPruneTEB(boost::optional<const PoseSE2&> new_sta
       if (dist<dist_cache)
       {
         dist_cache = dist;
-        nearest_idx = i;
+        nearest_idx = i; // 找到轨迹中离机器人当前位置最近的那个点
       }
       else break;
     }
@@ -587,7 +614,7 @@ void TimedElasticBand::updateAndPruneTEB(boost::optional<const PoseSE2&> new_sta
     }
     
     // update start
-    Pose(0) = *new_start;
+    Pose(0) = *new_start; // what about the timediff to the next pose? leave it as is, the optimizer will fix it
   }
   
   if (new_goal && sizePoses()>0)

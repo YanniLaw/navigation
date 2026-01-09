@@ -244,15 +244,25 @@ void TebOptimalPlanner::setVelocityGoal(const geometry_msgs::Twist& vel_goal)
   vel_goal_.second = vel_goal;
 }
 
+/**
+ * @brief 基于当前转换到局部坐标系下的全局路径，初始化或更新 TEB 轨迹，设置边界条件（速度），然后启动优化器。
+ * 
+ * @param initial_plan  转换到odom坐标系下的全局路径(裁剪后处于局部地图范围内)
+ * @param start_vel 机器人起始速度
+ * @param free_goal_vel 是否允许机器人到终点仍然保持速度(停靠点)
+ * @return bool  是否成功规划出局部路径
+ */
 bool TebOptimalPlanner::plan(const std::vector<geometry_msgs::PoseStamped>& initial_plan, const geometry_msgs::Twist* start_vel, bool free_goal_vel)
 {    
   ROS_ASSERT_MSG(initialized_, "Call initialize() first.");
+  // cold start: 当 TEB 算法第一次运行，或者重置后运行，或者之前的轨迹完全失效时，它没有“上一帧的经验”可用。此时，TEB 必须从头开始构建一条初始轨迹。
   if (!teb_.isInit())
   {
     teb_.initTrajectoryToGoal(initial_plan, cfg_->robot.max_vel_x, cfg_->robot.max_vel_theta, cfg_->trajectory.global_plan_overwrite_orientation,
       cfg_->trajectory.min_samples, cfg_->trajectory.allow_init_with_backwards_motion);
   }
-  else // warm start
+  else // warm start : 当 TEB 已经有一条轨迹时，它可以利用之前的轨迹作为“经验”来加速新的规划过程。这种方法通常称为“热启动”。
+       // 用“上一周期已经优化过的 TEB 轨迹”作为本周期优化的初值，然后做少量更新（平移/裁剪/补点）再继续迭代优化
   {
     PoseSE2 start_(initial_plan.front().pose);
     PoseSE2 goal_(initial_plan.back().pose);

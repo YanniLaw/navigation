@@ -206,7 +206,7 @@ void TebLocalPlannerROS::initialize(std::string name, tf2_ros::Buffer* tf, costm
 }
 
 
-
+// global plan in the map frame
 bool TebLocalPlannerROS::setPlan(const std::vector<geometry_msgs::PoseStamped>& orig_global_plan)
 {
   // check if plugin is initialized
@@ -260,12 +260,12 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
   cmd_vel.twist.linear.x = cmd_vel.twist.linear.y = cmd_vel.twist.angular.z = 0;
   goal_reached_ = false;  
   
-  // Get robot pose
+  // Get robot pose, in odom frame
   geometry_msgs::PoseStamped robot_pose;
   costmap_ros_->getRobotPose(robot_pose);
   robot_pose_ = PoseSE2(robot_pose.pose);
     
-  // Get robot velocity 机器人本体坐标系下
+  // Get robot velocity 机器人本体坐标系下 base_link
   geometry_msgs::PoseStamped robot_vel_tf;
   odom_helper_.getRobotVel(robot_vel_tf);
   robot_vel_.linear.x = robot_vel_tf.pose.position.x;
@@ -278,7 +278,8 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
   // Transform global plan to the frame of interest (w.r.t. the local costmap)
   std::vector<geometry_msgs::PoseStamped> transformed_plan;
   int goal_idx;
-  geometry_msgs::TransformStamped tf_plan_to_global;
+  geometry_msgs::TransformStamped tf_plan_to_global; // map 到 odom的坐标变换
+  // 将map系下的全局路径转换为odom坐标系下的局部路径，处于局部地图范围内，且位于最大前视距离范围内
   if (!transformGlobalPlan(*tf_, global_plan_, robot_pose, *costmap_, global_frame_, cfg_.trajectory.max_global_plan_lookahead_dist, 
                            transformed_plan, &goal_idx, &tf_plan_to_global))
   {
@@ -288,6 +289,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
   }
 
   // update via-points container
+  // 如果没有自定义通过点，就用算法给定的间隔参数选择通过点(过滤原始路径)
   if (!custom_via_points_active_)
     updateViaPointsContainer(transformed_plan, cfg_.trajectory.global_plan_viapoint_sep);
 
@@ -302,7 +304,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
   double delta_orient = g2o::normalize_theta( tf2::getYaw(global_goal.pose.orientation) - robot_pose_.theta() );
   if(fabs(std::sqrt(dx*dx+dy*dy)) < cfg_.goal_tolerance.xy_goal_tolerance
     && fabs(delta_orient) < cfg_.goal_tolerance.yaw_goal_tolerance
-    && (!cfg_.goal_tolerance.complete_global_plan || via_points_.size() == 0)
+    && (!cfg_.goal_tolerance.complete_global_plan || via_points_.size() == 0) // 是否要求完成的执行全局路径
     && (base_local_planner::stopped(base_odom, cfg_.goal_tolerance.theta_stopped_vel, cfg_.goal_tolerance.trans_stopped_vel)
         || cfg_.goal_tolerance.free_goal_vel))
   {
@@ -322,7 +324,7 @@ uint32_t TebLocalPlannerROS::computeVelocityCommands(const geometry_msgs::PoseSt
     return mbf_msgs::ExePathResult::INVALID_PATH;
   }
               
-  // Get current goal point (last point of the transformed plan)
+  // Get current goal point (last point of the transformed plan)当前局部规划的目标点
   robot_goal_.x() = transformed_plan.back().pose.position.x;
   robot_goal_.y() = transformed_plan.back().pose.position.y;
   // Overwrite goal orientation if needed
@@ -498,7 +500,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCostmap()
           Eigen::Vector2d obs;
           costmap_->mapToWorld(i,j,obs.coeffRef(0), obs.coeffRef(1));
             
-          // check if obstacle is interesting (e.g. not far behind the robot)
+          // check if obstacle is interesting (e.g. not far behind the robot) 过滤机器人后方且足够远的障碍
           Eigen::Vector2d obs_dir = obs-robot_pose_.position();
           if ( obs_dir.dot(robot_orient) < 0 && obs_dir.norm() > cfg_.obstacles.costmap_obstacles_behind_robot_dist  )
             continue;
@@ -564,6 +566,7 @@ void TebLocalPlannerROS::updateObstacleContainerWithCustomObstacles()
   if (!custom_obstacle_msg_.obstacles.empty())
   {
     // We only use the global header to specify the obstacle coordinate system instead of individual ones
+    // 先查询自定义障碍物消息所在的坐标系到odom的坐标变换
     Eigen::Affine3d obstacle_to_map_eig;
     try 
     {
@@ -660,7 +663,15 @@ Eigen::Vector2d TebLocalPlannerROS::tfPoseToEigenVector2dTransRot(const tf::Pose
   return vel;
 }
       
-      
+/**
+ * @brief 
+ * 
+ * @param tf 
+ * @param global_pose robot pose in odom frame
+ * @param global_plan global path in map frame
+ * @param dist_behind_robot 
+ * @return true 
+ */
 bool TebLocalPlannerROS::pruneGlobalPlan(const tf2_ros::Buffer& tf, const geometry_msgs::PoseStamped& global_pose, std::vector<geometry_msgs::PoseStamped>& global_plan, double dist_behind_robot)
 {
   if (global_plan.empty())
@@ -669,9 +680,10 @@ bool TebLocalPlannerROS::pruneGlobalPlan(const tf2_ros::Buffer& tf, const geomet
   try
   {
     // transform robot pose into the plan frame (we do not wait here, since pruning not crucial, if missed a few times)
+    // 查找odom到map的坐标变换 lookupTransform(target_frame, source_frame)
     geometry_msgs::TransformStamped global_to_plan_transform = tf.lookupTransform(global_plan.front().header.frame_id, global_pose.header.frame_id, ros::Time(0));
     geometry_msgs::PoseStamped robot;
-    tf2::doTransform(global_pose, robot, global_to_plan_transform);
+    tf2::doTransform(global_pose, robot, global_to_plan_transform); // 将机器人位姿变换到map坐标系下
     
     double dist_thresh_sq = dist_behind_robot*dist_behind_robot;
     
@@ -679,20 +691,19 @@ bool TebLocalPlannerROS::pruneGlobalPlan(const tf2_ros::Buffer& tf, const geomet
     std::vector<geometry_msgs::PoseStamped>::iterator it = global_plan.begin();
     std::vector<geometry_msgs::PoseStamped>::iterator erase_end = it;
     // 从全局路径的开始朝后遍历，找出第一个距离机器人小于 dist_behind_robot 的路径点
-    // 这样的话 找到的这个路径点就一定是位于机器人后方的点
     while (it != global_plan.end())
     {
-      double dx = robot.pose.position.x - it->pose.position.x;
+      double dx = robot.pose.position.x - it->pose.position.x; // map 坐标系下
       double dy = robot.pose.position.y - it->pose.position.y;
       double dist_sq = dx * dx + dy * dy;
-      if (dist_sq < dist_thresh_sq)
+      if (dist_sq < dist_thresh_sq) // 找到第一个小于距离的路径点
       {
          erase_end = it;
          break;
       }
       ++it;
     }
-    if (erase_end == global_plan.end())
+    if (erase_end == global_plan.end()) // 没有找到，不裁剪
       return false;
     
     if (erase_end != global_plan.begin())
@@ -706,7 +717,21 @@ bool TebLocalPlannerROS::pruneGlobalPlan(const tf2_ros::Buffer& tf, const geomet
   return true;
 }
       
-
+/**
+ * @brief 
+ * 
+ * @param tf 
+ * @param global_plan 裁剪后的全局路径 map系下
+ * @param global_pose 当前机器人在odom下的位姿
+ * @param costmap 
+ * @param global_frame odom
+ * @param max_plan_length 最大前视局部规划距离
+ * @param transformed_plan 
+ * @param current_goal_idx 当前目标index，类似于纯跟踪的前瞻点，就是局部规划范围内最远的那个path index
+ * @param tf_plan_to_global map到odom的坐标变换
+ * @return true 
+ * @return false 
+ */
 bool TebLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const std::vector<geometry_msgs::PoseStamped>& global_plan,
                   const geometry_msgs::PoseStamped& global_pose, const costmap_2d::Costmap2D& costmap, const std::string& global_frame, double max_plan_length,
                   std::vector<geometry_msgs::PoseStamped>& transformed_plan, int* current_goal_idx, geometry_msgs::TransformStamped* tf_plan_to_global) const
@@ -727,12 +752,13 @@ bool TebLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
     }
 
     // get plan_to_global_transform from plan frame to global_frame
+    // 查找map 到 odom的坐标变换 lookupTransform(target_frame, source_frame)
     geometry_msgs::TransformStamped plan_to_global_transform = tf.lookupTransform(global_frame, ros::Time(), plan_pose.header.frame_id, plan_pose.header.stamp,
                                                                                   plan_pose.header.frame_id, ros::Duration(cfg_.robot.transform_tolerance));
 
     //let's get the pose of the robot in the frame of the plan
     geometry_msgs::PoseStamped robot_pose;
-    tf.transform(global_pose, robot_pose, plan_pose.header.frame_id);
+    tf.transform(global_pose, robot_pose, plan_pose.header.frame_id); // 将机器人的odom位姿变换到map系下
 
     //we'll discard points on the plan that are outside the local costmap
     double dist_threshold = std::max(costmap.getSizeInCellsX() * costmap.getResolution() / 2.0,
@@ -750,13 +776,13 @@ bool TebLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
     bool robot_reached = false;
     for(int j=0; j < (int)global_plan.size(); ++j)
     {
-      double x_diff = robot_pose.pose.position.x - global_plan[j].pose.position.x;
+      double x_diff = robot_pose.pose.position.x - global_plan[j].pose.position.x; // map frame
       double y_diff = robot_pose.pose.position.y - global_plan[j].pose.position.y;
       double new_sq_dist = x_diff * x_diff + y_diff * y_diff;
 
       if (robot_reached && new_sq_dist > sq_dist)
         break;
-
+      // 寻找距离当前机器人把最近的路径点
       if (new_sq_dist < sq_dist) // find closest distance
       {
         sq_dist = new_sq_dist;
@@ -771,14 +797,15 @@ bool TebLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
     double plan_length = 0; // check cumulative Euclidean distance along the plan
     
     //now we'll transform until points are outside of our distance threshold
+    // 一般达到最大规划路径长度max_plan_length 或者 机器人到路径点的距离快到达局部地图大小时就退出
     while(i < (int)global_plan.size() && sq_dist <= sq_dist_threshold && (max_plan_length<=0 || plan_length <= max_plan_length))
     {
       const geometry_msgs::PoseStamped& pose = global_plan[i];
-      tf2::doTransform(pose, newer_pose, plan_to_global_transform);
+      tf2::doTransform(pose, newer_pose, plan_to_global_transform); // 将路径点变换到odom坐标系下
 
       transformed_plan.push_back(newer_pose);
 
-      double x_diff = robot_pose.pose.position.x - global_plan[i].pose.position.x;
+      double x_diff = robot_pose.pose.position.x - global_plan[i].pose.position.x;// map坐标系相减
       double y_diff = robot_pose.pose.position.y - global_plan[i].pose.position.y;
       sq_dist = x_diff * x_diff + y_diff * y_diff;
       
@@ -833,7 +860,16 @@ bool TebLocalPlannerROS::transformGlobalPlan(const tf2_ros::Buffer& tf, const st
 
     
       
-      
+/**
+ * @brief 据全局路径来估算当前局部目标点的期望朝向。 通常用的是沿着全局路径往前看几步的切线方向做平滑，避免全局路径里 orientation 不靠谱/跳变，导致 TEB 到点时抖动或振荡
+ * 
+ * @param global_plan 全局规划的路径 map系下
+ * @param local_goal 局部规划的目标点 odom系下
+ * @param current_goal_idx 当前局部goal在全局路径中的index
+ * @param tf_plan_to_global map 到odom的坐标变换
+ * @param moving_average_length 往前取多少段路径方向来平滑
+ * @return * double 
+ */
 double TebLocalPlannerROS::estimateLocalGoalOrientation(const std::vector<geometry_msgs::PoseStamped>& global_plan, const geometry_msgs::PoseStamped& local_goal,
               int current_goal_idx, const geometry_msgs::TransformStamped& tf_plan_to_global, int moving_average_length) const
 {
@@ -863,7 +899,7 @@ double TebLocalPlannerROS::estimateLocalGoalOrientation(const std::vector<geomet
   std::vector<double> candidates;
   geometry_msgs::PoseStamped tf_pose_k = local_goal;
   geometry_msgs::PoseStamped tf_pose_kp1;
-  
+  // 从 current_goal_idx 开始，看未来 K 段路径，算每一段的方向角
   int range_end = current_goal_idx + moving_average_length;
   for (int i = current_goal_idx; i < range_end; ++i)
   {
@@ -952,16 +988,22 @@ void TebLocalPlannerROS::validateFootprints(double opt_inscribed_radius, double 
 }
    
    
-   
+/**
+ * @brief 配置恢复模式
+ * TEB 有时因为障碍/约束太紧，远处路径会让优化一直 infeasible。短视野能让它先找到“局部能走的一小段”，先动起来再说
+ * @param transformed_plan 转换到odom坐标系下的局部路径点数组
+ * @param goal_idx 局部目标点在全局路径中的索引
+ * @return * void 
+ */
 void TebLocalPlannerROS::configureBackupModes(std::vector<geometry_msgs::PoseStamped>& transformed_plan,  int& goal_idx)
 {
     ros::Time current_time = ros::Time::now();
     
-    // reduced horizon backup mode
+    // reduced horizon backup mode 缩短视野恢复模式
     if (cfg_.recovery.shrink_horizon_backup && 
         goal_idx < (int)transformed_plan.size()-1 && // we do not reduce if the goal is already selected (because the orientation might change -> can introduce oscillations)
        (no_infeasible_plans_>0 || (current_time - time_last_infeasible_plan_).toSec() < cfg_.recovery.shrink_horizon_min_duration )) // keep short horizon for at least a few seconds
-    {
+    { // 连续检测到“不可行轨迹”的次数大于0 或者虽然现在刚好没失败，但 离上次失败还很近，就保持短视野至少
         ROS_INFO_COND(no_infeasible_plans_==1, "Activating reduced horizon backup mode for at least %.2f sec (infeasible trajectory detected).", cfg_.recovery.shrink_horizon_min_duration);
 
 
@@ -990,17 +1032,18 @@ void TebLocalPlannerROS::configureBackupModes(std::vector<geometry_msgs::PoseSta
     // detect and resolve oscillations
     if (cfg_.recovery.oscillation_recovery)
     {
-        double max_vel_theta;
+        double max_vel_theta; // 先计算“合理的最大角速度”用于检测阈值归一化
         double max_vel_current = last_cmd_.linear.x >= 0 ? cfg_.robot.max_vel_x : cfg_.robot.max_vel_x_backwards;
         if (cfg_.robot.min_turning_radius!=0 && max_vel_current>0)
             max_vel_theta = std::max( max_vel_current/std::abs(cfg_.robot.min_turning_radius),  cfg_.robot.max_vel_theta );
         else
             max_vel_theta = cfg_.robot.max_vel_theta;
-        
+        // 更新检测器并判断是否振荡
         failure_detector_.update(last_cmd_, cfg_.robot.max_vel_x, cfg_.robot.max_vel_x_backwards, max_vel_theta,
                                cfg_.recovery.oscillation_v_eps, cfg_.recovery.oscillation_omega_eps);
         
         bool oscillating = failure_detector_.isOscillating();
+        // 避免刚检测到振荡又立刻取消恢复策略，保持至少一段时间
         bool recently_oscillated = (ros::Time::now()-time_last_oscillation_).toSec() < cfg_.recovery.oscillation_recovery_min_duration; // check if we have already detected an oscillation recently
         
         if (oscillating)
