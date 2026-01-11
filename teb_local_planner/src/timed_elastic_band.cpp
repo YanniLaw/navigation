@@ -223,36 +223,48 @@ void TimedElasticBand::setTimeDiffVertexFixed(int index, bool status)
   timediff_vec_.at(index)->setFixed(status);
 }
 
-
+/**
+ * @brief 根据期望时间分辨率 dt_ref（带滞回 dt_hysteresis），自动给 TEB 轨迹“插点/删点”，
+ * 让相邻 pose 的时间间隔 dt 尽量保持在 dt_ref ± dt_hysteresis，
+ * 同时保证采样点数在 [min_samples, max_samples] 范围内
+ * @param dt_ref 参考时间间隔
+ * @param dt_hysteresis  滞后阈值（容差）。为了避免频繁地加点删点（震荡），允许 dt 在 dt_ref ± dt_hysteresis 范围内波动。
+ * @param min_samples 
+ * @param max_samples 
+ * @param fast_mode 快速模式。如果开启，每次调用只遍历一遍轨迹，不进行反复迭代，牺牲一点精度换取速度（通常开启）
+ */
 void TimedElasticBand::autoResize(double dt_ref, double dt_hysteresis, int min_samples, int max_samples, bool fast_mode)
 {  
   ROS_ASSERT(sizeTimeDiffs() == 0 || sizeTimeDiffs() + 1 == sizePoses());
   /// iterate through all TEB states and add/remove states!
   bool modified = true;
-
+  // 防止振荡死循环
   for (int rep = 0; rep < 100 && modified; ++rep) // actually it should be while(), but we want to make sure to not get stuck in some oscillation, hence max 100 repitions.
   {
     modified = false;
-
+    // 内层遍历所有 timediffs
     for(int i=0; i < sizeTimeDiffs(); ++i) // TimeDiff connects Point(i) with Point(i+1)
     {
+      // dt 太大(点太稀疏了)：想办法让它变回接近 dt_ref
       if(TimeDiff(i) > dt_ref + dt_hysteresis && sizeTimeDiffs()<max_samples)
       {
           // Force the planner to have equal timediffs between poses (dt_ref +/- dt_hyteresis).
           // (new behaviour)
-          if (TimeDiff(i) > 2*dt_ref) 
+          // 如果这一段的时间间隔甚至超过了 2倍的参考时间，说明太长了，直接“二分拆分”并插入中间 pose
+          if (TimeDiff(i) > 2*dt_ref)
           {
               double newtime = 0.5*TimeDiff(i);
 
               TimeDiff(i) = newtime;
+              // 核心操作：在 i+1 的位置插入一个新点, 新点的位置是 i 和 i+1 的中间值（平均值）
               insertPose(i+1, PoseSE2::average(Pose(i),Pose(i+1)) );
               insertTimeDiff(i+1,newtime);
-
+              // 回退索引，因为刚才把当前段切分了，下一轮循环要重新检查切分后的两小段是否还需要继续切分
               i--; // check the updated pose diff again
               modified = true;
           } 
-          else 
-          {
+          else // 如果 dt 只是稍大（<= 2*dt_ref）: 不插点，直接把它“夹回 dt_ref”，并把多余时间挪给下一个 dt
+          { // 是个很典型的工程技巧：保持总时间不变（或近似不变）
               if (i < sizeTimeDiffs() - 1) 
               {
                   timediffs().at(i+1)->dt()+= timediffs().at(i)->dt() - dt_ref;
@@ -260,10 +272,13 @@ void TimedElasticBand::autoResize(double dt_ref, double dt_hysteresis, int min_s
               timediffs().at(i)->dt() = dt_ref;
           }
       }
+      // dt 太小（点太密）：合并相邻段，删掉一个 pose（减少采样点）
       else if(TimeDiff(i) < dt_ref - dt_hysteresis && sizeTimeDiffs()>min_samples) // only remove samples if size is larger than min_samples.
       {
         //ROS_DEBUG("teb_local_planner: autoResize() deleting bandpoint i=%u, #TimeDiffs=%lu",i,sizeTimeDiffs());
-
+        // 正常情况：删除第 i+1 个点
+        // 把第 i+1 段的时间累加到第 i+1 段上去（合并时间）
+        // 注意：这里代码实际上是把 TimeDiff(i) 和 TimeDiff(i+1) 合并
         if(i < ((int)sizeTimeDiffs()-1))
         {
           TimeDiff(i+1) = TimeDiff(i+1) + TimeDiff(i);
@@ -271,7 +286,7 @@ void TimedElasticBand::autoResize(double dt_ref, double dt_hysteresis, int min_s
           deletePose(i+1);
           i--; // check the updated pose diff again
         }
-        else
+        else // 边界情况：如果是最后一个 dt：把最后 dt 合并到前一个 dt，删掉最后一个 pose
         { // last motion should be adjusted, shift time to the interval before
           TimeDiff(i-1) += TimeDiff(i);
           deleteTimeDiff(i);
@@ -281,6 +296,13 @@ void TimedElasticBand::autoResize(double dt_ref, double dt_hysteresis, int min_s
         modified = true;
       }
     }
+    /*  fast_mode=true：只做一轮扫描，不反复 rep 迭代。
+    优点：快，实时性更好。
+    缺点：如果 dt 分布很不均匀，一轮可能修不干净（比如一个超大 dt 需要拆很多次才接近 dt_ref）。
+        fast_mode=false：允许多轮 rep，直到稳定或达到 100 次。
+    优点：dt 更均匀，尤其对 动态障碍（时间维度更敏感）更稳。
+    缺点：更耗 CPU。
+    */
     if (fast_mode) break;
   }
 }

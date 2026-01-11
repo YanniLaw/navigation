@@ -178,7 +178,18 @@ boost::shared_ptr<g2o::SparseOptimizer> TebOptimalPlanner::initOptimizer()
   return optimizer;
 }
 
-
+/**
+ * @brief 优化 TEB 轨迹的主函数接口
+ * 
+ * @param iterations_innerloop 内循环次数（g2o 求解器的迭代次数）
+ * @param iterations_outerloop 外循环次数（TEB 调整轨迹结构、调整权重的次数）
+ * @param compute_cost_afterwards 是否在优化后计算当前代价
+ * @param obst_cost_scale 障碍物代价权重
+ * @param viapoint_cost_scale 途经点代价权重
+ * @param alternative_time_cost 是否使用替代时间代价
+ * @return true 优化成功
+ * @return false 优化失败
+ */
 bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_outerloop, bool compute_cost_afterwards,
                                     double obst_cost_scale, double viapoint_cost_scale, bool alternative_time_cost)
 {
@@ -186,8 +197,8 @@ bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_out
     return false;
   
   bool success = false;
-  optimized_ = false;
-  
+  optimized_ = false; // 标记这次是否成功跑过优化（供外部逻辑判断）
+  // 一个“权重自适应倍增器”，每轮 outer loop 会乘上 weight_adapt_factor，用于逐步加大（或调整）某些约束/边的权重，让解更稳定/更可行
   double weight_multiplier = 1.0;
 
   // TODO(roesmann): we introduced the non-fast mode with the support of dynamic obstacles
@@ -196,21 +207,23 @@ bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_out
   //                 the legacy fast mode as default until we finish our tests.
   bool fast_mode = !cfg_->obstacles.include_dynamic_obstacles;
   
-  for(int i=0; i<iterations_outerloop; ++i)
+  for(int i=0; i<iterations_outerloop; ++i) // 外循环: 负责调整结构（加减点、调整权重）
   {
+    // 1. 自动调整轨迹点数量 (Elastic Band 的体现)
     if (cfg_->trajectory.teb_autosize)
     {
       //teb_.autoResize(cfg_->trajectory.dt_ref, cfg_->trajectory.dt_hysteresis, cfg_->trajectory.min_samples, cfg_->trajectory.max_samples);
       teb_.autoResize(cfg_->trajectory.dt_ref, cfg_->trajectory.dt_hysteresis, cfg_->trajectory.min_samples, cfg_->trajectory.max_samples, fast_mode);
 
     }
-
+    // 2. 构建优化图 (Build Graph)
     success = buildGraph(weight_multiplier);
     if (!success) 
     {
         clearGraph();
         return false;
     }
+    // 3. 执行图优化 (Optimize Graph - Inner Loop) 内循环: 负责调整数值（在结构确定的情况下，让 Cost 最小）
     success = optimizeGraph(iterations_innerloop, false);
     if (!success) 
     {
@@ -218,12 +231,12 @@ bool TebOptimalPlanner::optimizeTEB(int iterations_innerloop, int iterations_out
         return false;
     }
     optimized_ = true;
-    
+    // 4. 计算最终代价 (仅在最后一次迭代)
     if (compute_cost_afterwards && i==iterations_outerloop-1) // compute cost vec only in the last iteration
       computeCurrentCost(obst_cost_scale, viapoint_cost_scale, alternative_time_cost);
-      
+    // 5. 清理图，为下一次循环做准备
     clearGraph();
-    
+    // 6. 权重调整
     weight_multiplier *= cfg_->optim.weight_adapt_factor;
   }
 
@@ -332,12 +345,15 @@ bool TebOptimalPlanner::plan(const PoseSE2& start, const PoseSE2& goal, const ge
 
 bool TebOptimalPlanner::buildGraph(double weight_multiplier)
 {
+  // 非空检查：g2o 的图结构是一次性的。如果上一轮的图还没清空（clearGraph），这轮就不能建新图，否则会内存泄漏或逻辑混乱
   if (!optimizer_->edges().empty() || !optimizer_->vertices().empty())
   {
     ROS_WARN("Cannot build graph, because it is not empty. Call graphClear()!");
     return false;
   }
-
+  // 配置是否统计 batch 信息（用于发散检测/恢复）
+  // 开启后，g2o 在优化过程中会统计一些信息（残差/chi² 等），用于判断是否“发散/数值不稳定”。
+  // 常用于 recovery：如果优化突然变差，可以触发重置/冷启动/降低速度等
   optimizer_->setComputeBatchStatistics(cfg_->recovery.divergence_detection_enable);
   
   // add TEB vertices
@@ -434,7 +450,7 @@ void TebOptimalPlanner::AddTEBVertices()
   // add vertices to graph
   ROS_DEBUG_COND(cfg_->optim.optimization_verbose, "Adding TEB vertices ...");
   unsigned int id_counter = 0; // used for vertices ids
-  obstacles_per_vertex_.resize(teb_.sizePoses());
+  obstacles_per_vertex_.resize(teb_.sizePoses()); // obstacles_per_vertex_是std::vector<std::vector<ObstaclePtr>>类型
   auto iter_obstacle = obstacles_per_vertex_.begin();
   for (int i=0; i<teb_.sizePoses(); ++i)
   {
@@ -450,25 +466,32 @@ void TebOptimalPlanner::AddTEBVertices()
   }
 }
 
-
+/**
+ * @brief “新版障碍物关联策略”
+ * 在某些复杂场景下（如长墙）效果不如新版的“以轨迹点为中心寻找最近障碍物”策略，但它计算量可能更小。
+ * @param weight_multiplier 外层迭代的自适应倍数
+ */
 void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
 {
+  // 早退条件：权重为 0 或无障碍就不加边
   if (cfg_->optim.weight_obstacle==0 || weight_multiplier==0 || obstacles_==nullptr )
     return; // if weight equals zero skip adding edges!
     
-  
+  // 判断是否启用了膨胀逻辑
   bool inflated = cfg_->obstacles.inflation_dist > cfg_->obstacles.min_obstacle_dist;
-
+  // 设置信息矩阵（本质就是权重）, 在 g2o 图优化中，"Information Matrix" 就是权重（Weight）的矩阵形式（协方差矩阵的逆）。
+  // 1. 设置普通障碍物的权重矩阵 (1x1)
   Eigen::Matrix<double,1,1> information;
   information.fill(cfg_->optim.weight_obstacle * weight_multiplier);
-  
+  // 2. 设置膨胀障碍物的权重矩阵 (2x2)
   Eigen::Matrix<double,2,2> information_inflated;
   information_inflated(0,0) = cfg_->optim.weight_obstacle * weight_multiplier;
   information_inflated(1,1) = cfg_->optim.weight_inflation;
   information_inflated(0,1) = information_inflated(1,0) = 0;
 
   auto iter_obstacle = obstacles_per_vertex_.begin();
-
+  // Lambda 函数 create_edge
+  // 这是一个小助手，用于把选中的障碍物封装成 g2o 的 Edge 并加入优化器。
   auto create_edge = [inflated, &information, &information_inflated, this] (int index, const Obstacle* obstacle) {
     if (inflated)
     {
@@ -487,28 +510,35 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
       optimizer_->addEdge(dist_bandpt_obst);
     };
   };
-    
+
+  // first_vertex 这个小技巧很重要：
+  // 如果 不使用 EdgeVelocityObstacleRatio，那就从 i=1 开始（跳过起点 pose0，通常起点固定，没必要对它加避障边，避免优化残差变大）。
+  // 如果 要使用 VelocityObstacleRatio，就从 i=0 开始遍历，因为后面要用 i=0 的障碍关联结果来构建“速度-障碍”耦合边（即使不在 i=0 上建 obstacle edge）。 
   // iterate all teb points, skipping the last and, if the EdgeVelocityObstacleRatio edges should not be created, the first one too
   const int first_vertex = cfg_->optim.weight_velocity_obstacle_ratio == 0 ? 1 : 0;
-  for (int i = first_vertex; i < teb_.sizePoses() - 1; ++i)
+  for (int i = first_vertex; i < teb_.sizePoses() - 1; ++i) // 遍历 TEB 轨迹的所有 Pose
   {    
-      double left_min_dist = std::numeric_limits<double>::max();
-      double right_min_dist = std::numeric_limits<double>::max();
-      ObstaclePtr left_obstacle;
-      ObstaclePtr right_obstacle;
-      
+      // 对每个轨迹点，只挑“最重要的障碍”：左边最近 + 右边最近 + 强制近距离障碍  
+      double left_min_dist = std::numeric_limits<double>::max();  // 初始化左侧最小距离
+      double right_min_dist = std::numeric_limits<double>::max(); // 初始化右侧最小距离
+      ObstaclePtr left_obstacle;  // 左侧最近的障碍物
+      ObstaclePtr right_obstacle; // 右侧最近的障碍物
+      // 当前机器人的朝向向量
       const Eigen::Vector2d pose_orient = teb_.Pose(i).orientationUnitVec();
       
       // iterate obstacles
       for (const ObstaclePtr& obst : *obstacles_)
       {
         // we handle dynamic obstacles differently below
+        // 跳过动态障碍物（动态障碍物的处理在别处）
         if(cfg_->obstacles.include_dynamic_obstacles && obst->isDynamic())
           continue;
 
-          // calculate distance to robot model
+          // calculate distance to robot model 距离不是“点到点”，而是机器人外形到障碍的最小距离
           double dist = cfg_->robot_model->calculateDistance(teb_.Pose(i), obst.get());
-          
+          // 如果障碍已经非常近（比安全距离还近很多，乘了一个 factor），
+          // 那无论它在左还是右、也不管“只保留左右各一个”，都要强制加入到这个 pose 的关联集合里。
+          // 这是为了避免只选“左右各一个”导致漏掉“贴脸障碍”（比如多个障碍聚在一起）。
           // force considering obstacle if really close to the current pose
         if (dist < cfg_->obstacles.min_obstacle_dist*cfg_->obstacles.obstacle_association_force_inclusion_factor)
           {
@@ -516,13 +546,20 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
               continue;
           }
           // cut-off distance
+          // 如果障碍物太远（超过安全距离的一定倍数），直接忽略。这能显著减少计算量。
           if (dist > cfg_->obstacles.min_obstacle_dist*cfg_->obstacles.obstacle_association_cutoff_factor)
             continue;
           
           // determine side (left or right) and assign obstacle if closer than the previous one
+          // 利用叉乘判断障碍物在机器人左侧还是右侧 在每一侧只保留“距离最小”的那个障碍（left/right 最近各一个）
+          // 这就是新版的“稀疏化”策略：默认每个 pose 最多只连 2 条避障边（左一个、右一个），除非有“强制纳入”的贴近障碍。
+          // 为什么要这样做？ 想象机器人在走廊里走。墙壁由成百上千个点组成。
+          // 如果把所有点都加进优化器，计算量会爆炸。 
+          // 这个策略保证了：对于每一个时刻，机器人只关心“左边最近的那个点”和“右边最近的那个点”。 
+          // 这足以限制机器人不撞墙，同时保持图优化规模最小。
           if (cross2d(pose_orient, obst->getCentroid() - teb_.Pose(i).position()) > 0) // left
           {
-              if (dist < left_min_dist)
+              if (dist < left_min_dist) // 擂台赛：只保留左侧最近的那一个
               {
                   left_min_dist = dist;
                   left_obstacle = obst;
@@ -530,7 +567,7 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
           }
           else
           {
-              if (dist < right_min_dist)
+              if (dist < right_min_dist) // 擂台赛：只保留右侧最近的那一个
               {
                   right_min_dist = dist;
                   right_obstacle = obst;
@@ -544,12 +581,14 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
         iter_obstacle->push_back(right_obstacle);
 
       // continue here to ignore obstacles for the first pose, but use them later to create the EdgeVelocityObstacleRatio edges
-      if (i == 0)
+      if (i == 0) // 对起点 pose0 不创建避障边（通常 pose0 固定，加了只会让问题更“硬”）
       {
         ++iter_obstacle;
         continue;
       }
-
+      // 边数量大致是：
+      // 正常情况：每个 pose 约 2 条（左+右）
+      // 复杂贴近场景：会多一些（强制纳入的障碍会增加）
       // create obstacle edges
       for (const ObstaclePtr obst : *iter_obstacle)
         create_edge(i, obst.get());
@@ -557,29 +596,52 @@ void TebOptimalPlanner::AddEdgesObstacles(double weight_multiplier)
   }
 }
 
-
+/**
+ * @brief “旧版障碍物关联策略”：它把每个障碍物（静态障碍）绑定到 TEB 轨迹上的某些 pose 顶点，
+ * 并为这些 pose 顶点各添加一条“避障代价边”（Edge），让优化把轨迹推离障碍。
+ * 之所以叫 "Legacy"（旧版/遗留），是因为这种“以障碍物为中心寻找最近轨迹点”的策略
+ * 在某些复杂场景下（如长墙）效果不如新版的“以轨迹点为中心寻找最近障碍物”策略，但它计算量可能更小。
+ *  ---------
+    优缺点分析
+    优点：
+    如果环境里的障碍物主要是稀疏的点状障碍物（比如柱子、人），这个方法效率很高。
+    循环次数取决于障碍物数量，而非轨迹点数量。如果障碍物少，轨迹长，它很快。
+    缺点：
+    在狭窄走廊或长墙环境下，如果 obstacle_poses_affected 设置得不够大，机器人可能会发生侧面剐蹭。
+    如果设置得太大，计算量又会激增。
+    ----------
+ * @param weight_multiplier 外层迭代的自适应倍数
+ */
 void TebOptimalPlanner::AddEdgesObstaclesLegacy(double weight_multiplier)
 {
+  // 早退条件：权重为 0 或无障碍就不加边
   if (cfg_->optim.weight_obstacle==0 || weight_multiplier==0 || obstacles_==nullptr)
     return; // if weight equals zero skip adding edges!
-
+  // 设置信息矩阵（本质就是权重）, 在 g2o 图优化中，"Information Matrix" 就是权重（Weight）的矩阵形式（协方差矩阵的逆）。
+  // 1. 设置普通障碍物的权重矩阵 (1x1)
   Eigen::Matrix<double,1,1> information; 
   information.fill(cfg_->optim.weight_obstacle * weight_multiplier);
-    
+  // 2. 设置膨胀障碍物的权重矩阵 (2x2)    
   Eigen::Matrix<double,2,2> information_inflated;
   information_inflated(0,0) = cfg_->optim.weight_obstacle * weight_multiplier;
   information_inflated(1,1) = cfg_->optim.weight_inflation;
   information_inflated(0,1) = information_inflated(1,0) = 0;
-  
+  // Inflated (膨胀):
+  // 如果是普通模式，只要距离 < min_dist 就产生 Cost。
+  // 如果是膨胀模式，距离 < min_dist 产生巨大 Cost（撞了），
+  // 距离在 min_dist ~ inflation_dist 之间产生较小的 Cost（靠太近了）。
+  // 这就是 EdgeInflatedObstacle 的作用
+
+  // 判断是否启用了膨胀逻辑
   bool inflated = cfg_->obstacles.inflation_dist > cfg_->obstacles.min_obstacle_dist;
-    
+  // 遍历障碍物：动态障碍跳过（这里只管静态）
   for (ObstContainer::const_iterator obst = obstacles_->begin(); obst != obstacles_->end(); ++obst)
   {
     if (cfg_->obstacles.include_dynamic_obstacles && (*obst)->isDynamic()) // we handle dynamic obstacles differently below
       continue; 
     
     int index;
-    
+    // 寻找关联点：轨迹上哪一个点离这个障碍物最近？
     if (cfg_->obstacles.obstacle_poses_affected >= teb_.sizePoses())
       index =  teb_.sizePoses() / 2;
     else
@@ -587,9 +649,10 @@ void TebOptimalPlanner::AddEdgesObstaclesLegacy(double weight_multiplier)
      
     
     // check if obstacle is outside index-range between start and goal
+    // 边界保护：忽略起点和终点附近的点 (通常起点和终点是固定的)
     if ( (index <= 1) || (index > teb_.sizePoses()-2) ) // start and goal are fixed and findNearestBandpoint finds first or last conf if intersection point is outside the range
 	    continue; 
-        
+    // 给“中心点 index”加一条避障边（Edge）  
     if (inflated)
     {
         EdgeInflatedObstacle* dist_bandpt_obst = new EdgeInflatedObstacle;
@@ -606,9 +669,11 @@ void TebOptimalPlanner::AddEdgesObstaclesLegacy(double weight_multiplier)
         dist_bandpt_obst->setParameters(*cfg_, obst->get());
         optimizer_->addEdge(dist_bandpt_obst);
     }
-
+    // 再给 index 的邻居点也加边（扩大影响范围）
+    // 这是一种“暴力”的修补方法，试图通过增加受影响的范围来解决长障碍物避障不完全的问题
     for (int neighbourIdx=0; neighbourIdx < floor(cfg_->obstacles.obstacle_poses_affected/2); neighbourIdx++)
     {
+      // 处理后方邻居 (index + n)
       if (index+neighbourIdx < teb_.sizePoses())
       {
             if (inflated)
@@ -628,6 +693,7 @@ void TebOptimalPlanner::AddEdgesObstaclesLegacy(double weight_multiplier)
                 optimizer_->addEdge(dist_bandpt_obst_n_r);
             }
       }
+      // 处理前方邻居 (index - n)
       if ( index - neighbourIdx >= 0) // needs to be casted to int to allow negative values
       {
             if (inflated)
