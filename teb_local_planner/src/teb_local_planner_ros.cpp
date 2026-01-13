@@ -916,7 +916,22 @@ double TebLocalPlannerROS::estimateLocalGoalOrientation(const std::vector<geomet
   return average_angles(candidates);
 }
       
-      
+/**
+ * @brief 对 TEB 计算出来的速度指令 (vx, vy, omega) 做“饱和限幅”，确保最终发给底盘的指令不超过配置的最大速度（前进/后退/横移/角速度/合速度） 
+ * TEB 的优化是基于惩罚函数（Penalty Method）的软约束。如果惩罚权重（Weight）不够大，优化结果可能会稍微越界。
+ * 这个函数是硬约束（Hard Constraint），用来兜底。
+ * 参数配置建议: 务必开启 use_proportional_saturation = true。
+ * 这能保证机器人在被迫减速时（例如为了满足角速度限制），不会偏离原定的轨迹路径。
+ * 如果不开启，机器人可能会因为 v_x被砍而 omega 没变，突然原地打转或切入内道导致碰撞
+ * @param vx 传入的线速度 x 方向
+ * @param vy 传入的线速度 y 方向
+ * @param omega 传入的角速度
+ * @param max_vel_x 最大线速度 x 方向
+ * @param max_vel_y 最大线速度 y 方向
+ * @param max_vel_trans 最大合速度
+ * @param max_vel_theta 最大角速度
+ * @param max_vel_x_backwards 最大后退速度
+ */
 void TebLocalPlannerROS::saturateVelocity(double& vx, double& vy, double& omega, double max_vel_x, double max_vel_y, double max_vel_trans, double max_vel_theta, 
               double max_vel_x_backwards) const
 {
@@ -940,7 +955,11 @@ void TebLocalPlannerROS::saturateVelocity(double& vx, double& vy, double& omega,
   }
   else if (vx < -max_vel_x_backwards)
     ratio_x = - max_vel_x_backwards / vx;
-
+  // 两种限幅方式：比例限幅 和 独立限幅
+  // 1. 比例限幅：取三个方向超标最严重的那个比例(最小的ratio)，三个方向速度都乘以这个比例 ***推荐***
+  //        效果: 保形，机器人会变慢，但运动轨迹的曲率半径保持不变
+  // 2. 独立限幅：每个方向速度分别乘以各自的限幅比例 
+  //        效果：轨迹变形，这可能会改变机器人的瞬时运动方向（航向角改变率变了），在精密导航中通常不推荐
   if (cfg_.robot.use_proportional_saturation)
   {
     double ratio = std::min(std::min(ratio_x, ratio_y), ratio_omega);
@@ -954,7 +973,7 @@ void TebLocalPlannerROS::saturateVelocity(double& vx, double& vy, double& omega,
     vy *= ratio_y;
     omega *= ratio_omega;
   }
-
+  // 总体速度再次检查
   double vel_linear = std::hypot(vx, vy);
   if (vel_linear > max_vel_trans)
   {

@@ -748,6 +748,8 @@ void TebOptimalPlanner::AddEdgesDynamicObstacles(double weight_multiplier)
   }
 }
 
+// 把 “via-points（引导点/贴全局路径的点）” 变成 g2o 图里的代价边，让 TEB 的轨迹在优化时尽量经过（或靠近）这些点，
+// 从而保持局部轨迹贴着全局路径/参考线走，同时仍允许避障、满足速度/加速度约束。
 void TebOptimalPlanner::AddEdgesViaPoints()
 {
   if (cfg_->optim.weight_viapoint==0 || via_points_==NULL || via_points_->empty() )
@@ -758,21 +760,24 @@ void TebOptimalPlanner::AddEdgesViaPoints()
   int n = teb_.sizePoses();
   if (n<3) // we do not have any degrees of freedom for reaching via-points
     return;
-  
+  // 遍历途经点
   for (ViaPointContainer::const_iterator vp_it = via_points_->begin(); vp_it != via_points_->end(); ++vp_it)
   {
-    
+    // 寻找离当前途经点最近的轨迹索引
     int index = teb_.findClosestTrajectoryPose(*vp_it, NULL, start_pose_idx);
+    // Ordered Mode (顺序模式): 如果 via_points_ordered 为真，说明这些途经点是有先后顺序的（先过A，再过B）
     if (cfg_->trajectory.via_points_ordered)
-      start_pose_idx = index+2; // skip a point to have a DOF inbetween for further via-points
-     
+      start_pose_idx = index+2; // skip a point to have a DOF inbetween for further via-points 寻找下一个途经点的匹配点时，必须从当前匹配点往后数 2 个点开始找
+    // 刻意跳过一个 pose，让两个 via-point 不会“压在同一个点或相邻点上”，给中间留一点自由度（否则会把局部轨迹绑得太死，容易抖、难避障） 
+
+    // 边界处理
     // check if point conicides with goal or is located behind it
     if ( index > n-2 ) 
       index = n-2; // set to a pose before the goal, since we can move it away!
     // check if point coincides with start or is located before it
     if ( index < 1)
     {
-      if (cfg_->trajectory.via_points_ordered)
+      if (cfg_->trajectory.via_points_ordered) // 顺序模式下不能跳过
       {
         index = 1; // try to connect the via point with the second (and non-fixed) pose. It is likely that autoresize adds new poses inbetween later.
       }
@@ -793,9 +798,11 @@ void TebOptimalPlanner::AddEdgesViaPoints()
   }
 }
 
+// 在 g2o 图里给每一段轨迹（Pose(i) → Pose(i+1)）加一条“速度约束边”，
+// 把 TEB 的空间离散点 + 时间间隔 dt 转成速度，并对速度超限进行惩罚（软约束），从而让优化结果满足你配置的 max_vel_
 void TebOptimalPlanner::AddEdgesVelocity()
 {
-  if (cfg_->robot.max_vel_y == 0) // non-holonomic robot
+  if (cfg_->robot.max_vel_y == 0) // non-holonomic robot 非全向机器人
   {
     if ( cfg_->optim.weight_max_vel_x==0 && cfg_->optim.weight_max_vel_theta==0)
       return; // if weight equals zero skip adding edges!
@@ -818,7 +825,7 @@ void TebOptimalPlanner::AddEdgesVelocity()
       optimizer_->addEdge(velocity_edge);
     }
   }
-  else // holonomic-robot
+  else // holonomic-robot 全向机器人
   {
     if ( cfg_->optim.weight_max_vel_x==0 && cfg_->optim.weight_max_vel_y==0 && cfg_->optim.weight_max_vel_theta==0)
       return; // if weight equals zero skip adding edges!
@@ -844,6 +851,12 @@ void TebOptimalPlanner::AddEdgesVelocity()
   }
 }
 
+// 在 g2o 图里加入“加速度约束/平滑约束”的边，让 TEB 轨迹的速度变化不要太猛，
+// 满足 acc_lim_*（线加速度、角加速度，必要时还有 y 向加速度），并且可选把“起始速度/目标速度”也纳入约束（热启动时常用）
+// 核心原理：为什么需要三个点？在离散的轨迹中，计算加速度需要“速度的差”，而计算速度又需要“位置的差”。
+// 速度 (v)：涉及 2 个位置 + 1 个时间间隔 ($P_i \to P_{i+1}$).
+// 加速度 (a)：涉及 2 个速度 $\to$ 涉及 3 个位置 + 2 个时间间隔。
+// 这就是为什么你会在这段代码里看到 setVertex 设置了多达 5 个顶点的绑定 $(P_i, P_{i+1}, P_{i+2}, \Delta T_i, \Delta T_{i+1})$ 
 void TebOptimalPlanner::AddEdgesAcceleration()
 {
   if (cfg_->optim.weight_acc_lim_x==0  && cfg_->optim.weight_acc_lim_theta==0) 
@@ -859,18 +872,19 @@ void TebOptimalPlanner::AddEdgesAcceleration()
     information(1,1) = cfg_->optim.weight_acc_lim_theta;
     
     // check if an initial velocity should be taken into accound
+    // 起点约束 (Start Boundary), 它保证了规划出来的轨迹与机器人当前的真实运动状态是平滑衔接的
     if (vel_start_.first)
     {
       EdgeAccelerationStart* acceleration_edge = new EdgeAccelerationStart;
       acceleration_edge->setVertex(0,teb_.PoseVertex(0));
       acceleration_edge->setVertex(1,teb_.PoseVertex(1));
       acceleration_edge->setVertex(2,teb_.TimeDiffVertex(0));
-      acceleration_edge->setInitialVelocity(vel_start_.second);
+      acceleration_edge->setInitialVelocity(vel_start_.second); // 传入当前的真实速度
       acceleration_edge->setInformation(information);
       acceleration_edge->setTebConfig(*cfg_);
       optimizer_->addEdge(acceleration_edge);
     }
-
+    // 中间段约束 (The Loop) —— 轨迹平滑  处理轨迹中间的平滑度
     // now add the usual acceleration edge for each tuple of three teb poses
     for (int i=0; i < n - 2; ++i)
     {
@@ -884,7 +898,7 @@ void TebOptimalPlanner::AddEdgesAcceleration()
       acceleration_edge->setTebConfig(*cfg_);
       optimizer_->addEdge(acceleration_edge);
     }
-    
+    // 终点约束 (Goal Boundary) —— 平稳停车
     // check if a goal velocity should be taken into accound
     if (vel_goal_.first)
     {
@@ -949,7 +963,7 @@ void TebOptimalPlanner::AddEdgesAcceleration()
 }
 
 
-
+// TEB 实际上是在解一个博弈问题——在不违反速度和加速度物理极限的前提下，把总耗时压缩到最短
 void TebOptimalPlanner::AddEdgesTimeOptimal()
 {
   if (cfg_->optim.weight_optimaltime==0) 
@@ -1033,7 +1047,7 @@ void TebOptimalPlanner::AddEdgesKinematicsCarlike()
   }  
 }
 
-
+// ：强制机器人在起步阶段向左转或者向右转 这并不是常规路径规划的一部分，而是一种**打破僵局（Break Symmetry）**的手段，通常用于解决机器人“左右摇摆/震荡”的问题。
 void TebOptimalPlanner::AddEdgesPreferRotDir()
 {
   //TODO(roesmann): Note, these edges can result in odd predictions, in particular
@@ -1072,6 +1086,7 @@ void TebOptimalPlanner::AddEdgesPreferRotDir()
   }
 }
 
+// 基于障碍物距离的动态速度调整：离障碍物越近，跑得越慢
 void TebOptimalPlanner::AddEdgesVelocityObstacleRatio()
 {
   Eigen::Matrix<double,2,2> information;
@@ -1095,7 +1110,12 @@ void TebOptimalPlanner::AddEdgesVelocityObstacleRatio()
     }
   }
 }
-
+/**
+ * @brief 检测优化过程是否发散（Diverged）
+ * 发散情况: 1. 无路可走：机器人被障碍物团团围住，无论怎么规划都会撞墙，导致障碍物约束的 Cost 极高。2
+ * 2. 初始值太差：全局路径（Global Plan）给出的初值极其离谱（比如直接穿过墙壁），优化器在有限的迭代次数内没能把它拉回到可行区域
+ * 3. 数值不稳定：某些极端情况下，浮点数计算溢出或矩阵奇异，导致计算结果飞了
+ */
 bool TebOptimalPlanner::hasDiverged() const
 {
   // Early returns if divergence detection is not active
@@ -1113,7 +1133,13 @@ bool TebOptimalPlanner::hasDiverged() const
 
   return last_iter_stats.chi2 > cfg_->recovery.divergence_detection_max_chi_squared;
 }
-
+/**
+ * @brief 给当前的轨迹打分（计算总代价 Cost） 不改顶点，只读每条边的 chi2()
+ * 用于同伦规划多条候选 TEB 的排序（哪个 cost 更小就选哪个）
+ * @param obst_cost_scale 障碍物代价缩放系数
+ * @param viapoint_cost_scale 途经点代价缩放系数
+ * @param alternative_time_cost 
+ */
 void TebOptimalPlanner::computeCurrentCost(double obst_cost_scale, double viapoint_cost_scale, bool alternative_time_cost)
 { 
   // check if graph is empty/exist  -> important if function is called between buildGraph and optimizeGraph/clearGraph
@@ -1137,12 +1163,19 @@ void TebOptimalPlanner::computeCurrentCost(double obst_cost_scale, double viapoi
   if (alternative_time_cost)
   {
     cost_ += teb_.getSumOfAllTimeDiffs();
+    // 直接累加所有的时间间隔 dt，作为时间代价
     // TEST we use SumOfAllTimeDiffs() here, because edge cost depends on number of samples, which is not always the same for similar TEBs,
     // since we are using an AutoResize Function with hysteresis.
+    // 在 g2o 优化中，EdgeTimeOptimal 的 Cost 通常是 dt^2（时间间隔的平方），
+    // TEB 的点数N是动态变化的（AutoResize）。如果一条路点很多，累加的项就多，Cost 天然就大；
+    // 如果一条路点很少，Cost 天然就小。这会导致“点少的路径”在比较时占便宜，哪怕它并不是真的快。
+    // 这并不符合我们想要的“时间代价只与总时间有关”的初衷。 为了在不同点数的轨迹之间公平竞争，这里直接使用物理上的总耗时作为评分标准，而不是用优化器里的平方和
   }
   
   // now we need pointers to all edges -> calculate error for each edge-type
   // since we aren't storing edge pointers, we need to check every edge
+  // obst_cost_scale 允许你在“选路”阶段和“优化”阶段使用不同的权重。
+  // 比如在优化时，为了平滑可以允许稍微靠近障碍物；但在选路打分时，你可能希望严厉惩罚离障碍物近的路径，优先选更宽敞的路。
   for (std::vector<g2o::OptimizableGraph::Edge*>::const_iterator it = optimizer_->activeEdges().begin(); it!= optimizer_->activeEdges().end(); it++)
   {
     double cur_cost = (*it)->chi2();
@@ -1169,7 +1202,15 @@ void TebOptimalPlanner::computeCurrentCost(double obst_cost_scale, double viapoi
     clearGraph();
 }
 
-
+/**
+ * @brief 根据两个位姿(起点和终点)和时间差，计算线速度和角速度
+ * @param pose1 起始位姿
+ * @param pose2 目标位姿
+ * @param dt 两个位姿之间的时间差
+ * @param vx 输出的线速度 x 分量
+ * @param vy 输出的线速度 y 分量
+ * @param omega 输出的角速度
+ */
 void TebOptimalPlanner::extractVelocity(const PoseSE2& pose1, const PoseSE2& pose2, double dt, double& vx, double& vy, double& omega) const
 {
   if (dt == 0)
@@ -1186,11 +1227,11 @@ void TebOptimalPlanner::extractVelocity(const PoseSE2& pose1, const PoseSE2& pos
   {
     Eigen::Vector2d conf1dir( cos(pose1.theta()), sin(pose1.theta()) );
     // translational velocity
-    double dir = deltaS.dot(conf1dir);
+    double dir = deltaS.dot(conf1dir); // > 0: 前进, < 0: 后退
     vx = (double) g2o::sign(dir) * deltaS.norm()/dt;
     vy = 0;
   }
-  else // holonomic robot
+  else // holonomic robot 全向机器人
   {
     // transform pose 2 into the current robot frame (pose1)
     // for velocities only the rotation of the direction vector is necessary.
@@ -1207,9 +1248,22 @@ void TebOptimalPlanner::extractVelocity(const PoseSE2& pose1, const PoseSE2& pos
   double orientdiff = g2o::normalize_theta(pose2.theta() - pose1.theta());
   omega = orientdiff/dt;
 }
-
+/**
+ * @brief 从当前优化好的 TEB 轨迹里，计算并输出下一步要发给底盘的速度指令（vx, vy, omega）
+ * @param vx 输出的线速度 x 分量
+ * @param vy 输出的线速度 y 分量
+ * @param omega 输出的角速度
+ * @param look_ahead_poses 前瞻的轨迹点数
+ * @return 如果成功获取速度指令则返回 true，否则返回 false
+ */
 bool TebOptimalPlanner::getVelocityCommand(double& vx, double& vy, double& omega, int look_ahead_poses) const
 {
+  // 为什么要设计look_ahead_poses???
+  // 平滑控制：TEB 优化出来的轨迹虽然理论上是平滑的，但毕竟是离散的点。 
+  // 如果机器人只盯着下一个点走（look_ahead_poses=1），当控制频率很高或者路径点很密时，微小的误差会导致舵机/电机频繁抖动。
+  // 看得远一点（比如看前 3 个点），相当于做了一个低通滤波，运动会更顺滑。
+  // tips:  如果你发现机器人走起来一顿一顿的，或者电机噪音大，可以尝试把外部调用时的 look_ahead_poses 稍微调大一点。
+  // 但如果调得太大，机器人在过急弯时会切角（Cut corners），或者反应迟钝
   if (teb_.sizePoses()<2)
   {
     ROS_ERROR("TebOptimalPlanner::getVelocityCommand(): The trajectory contains less than 2 poses. Make sure to init and optimize/plan the trajectory fist.");
@@ -1218,11 +1272,17 @@ bool TebOptimalPlanner::getVelocityCommand(double& vx, double& vy, double& omega
     omega = 0;
     return false;
   }
+  // 确定前瞻点， 并避免靠近 goal 过度前视
+  // 为了让机器人的运动更平滑，我们通常不会只盯着“下一个点”走，而是盯着“前面第 N 个点”走。
+  // 在接近终点时，强制减少前瞻点数。因为在终点微调姿态时，我们需要极高的精度，盯着下一个点走最准；如果看得太远，可能会导致停不准。
   look_ahead_poses = std::max(1, std::min(look_ahead_poses, teb_.sizePoses() - 1 - cfg_->trajectory.prevent_look_ahead_poses_near_goal));
   double dt = 0.0;
   for(int counter = 0; counter < look_ahead_poses; ++counter)
   {
     dt += teb_.TimeDiff(counter);
+    // 时间过长保护
+    // 如果累加的时间已经超过了理论参考值，说明看得太远了（或者轨迹点之间的时间间隔很大），
+    // 强制截断，就用当前的索引作为前瞻点。这防止了在轨迹很稀疏时计算出错误的速度。
     if(dt >= cfg_->trajectory.dt_ref * look_ahead_poses)  // TODO: change to look-ahead time? Refine trajectory?
     {
         look_ahead_poses = counter + 1;
@@ -1322,13 +1382,31 @@ void TebOptimalPlanner::getFullTrajectory(std::vector<TrajectoryPointMsg>& traje
   goal.time_from_start.fromSec(curr_time);
 }
 
-
+/**
+ * @brief “碰撞可行性检查“：在 TEB 优化完之后，用 costmap 的 footprint 碰撞检测去验证：轨迹在前方一定范围内（lookahead）是否会与障碍物发生碰撞。
+ * 如果检测到碰撞，就说明轨迹不可行，规划器需要重新规划（比如通过增加 via-point 或者触发恢复行为等手段）。
+ * 这个函数的作用是：
+ * 1. 最后一道防线：检查优化后的路径是否真正无碰撞，避免机器人在执行过程中发生碰撞事故。
+ * 2. 应对动态环境：优化过程耗时可能几十毫秒，但这期间可能有新障碍物出现，或者 Costmap 更新了。
+ * 3. 弥补离散误差：优化器基于有限的点进行计算，这个函数会在点之间进行插值检查，防止“穿墙”漏洞。
+  * @note 该函数并不会修改轨迹，只是进行检查。如果发现不可行，上层通常会触发 recovery（比如换同伦类、降低速度、重新初始化、甚至原地停住）。
+  * TEB 优化过程是软约束：可能会输出一条“看起来代价很低但仍然会撞”的轨迹（尤其在权重没调好、障碍关联不完整、采样太稀时）
+ * @param costmap_model 碰撞检测模型
+ * @param footprint_spec 机器人轮廓
+ * @param inscribed_radius 内切圆半径
+ * @param circumscribed_radius 外接圆半径
+ * @param look_ahead_idx 前瞻索引
+ * @param feasibility_check_lookahead_distance 前瞻距离
+ * @return true 
+ * @return false 
+ */
 bool TebOptimalPlanner::isTrajectoryFeasible(base_local_planner::CostmapModel* costmap_model, const std::vector<geometry_msgs::Point>& footprint_spec,
                                              double inscribed_radius, double circumscribed_radius, int look_ahead_idx, double feasibility_check_lookahead_distance)
 {
+  // 修正索引边界
   if (look_ahead_idx < 0 || look_ahead_idx >= teb().sizePoses())
     look_ahead_idx = teb().sizePoses() - 1;
-
+  // 基于距离截断检查范围
   if (feasibility_check_lookahead_distance > 0){
     for (int i=1; i < teb().sizePoses(); ++i){
       double pose_distance=std::hypot(teb().Pose(i).x()-teb().Pose(0).x(), teb().Pose(i).y()-teb().Pose(0).y());
@@ -1341,6 +1419,7 @@ bool TebOptimalPlanner::isTrajectoryFeasible(base_local_planner::CostmapModel* c
 
   for (int i=0; i <= look_ahead_idx; ++i)
   {           
+    // Check if the robot footprint at the pose is in collision
     if ( costmap_model->footprintCost(teb().Pose(i).x(), teb().Pose(i).y(), teb().Pose(i).theta(), footprint_spec, inscribed_radius, circumscribed_radius) == -1 )
     {
       if (visualization_)
@@ -1352,6 +1431,7 @@ bool TebOptimalPlanner::isTrajectoryFeasible(base_local_planner::CostmapModel* c
     // Checks if the distance between two poses is higher than the robot radius or the orientation diff is bigger than the specified threshold
     // and interpolates in that case.
     // (if obstacles are pushing two consecutive poses away, the center between two consecutive poses might coincide with the obstacle ;-)!
+    // 插值检查：防止优化出来的两个 pose 之间穿障碍
     if (i<look_ahead_idx)
     {
       double delta_rot = g2o::normalize_theta(g2o::normalize_theta(teb().Pose(i+1).theta()) -
@@ -1359,9 +1439,11 @@ bool TebOptimalPlanner::isTrajectoryFeasible(base_local_planner::CostmapModel* c
       Eigen::Vector2d delta_dist = teb().Pose(i+1).position()-teb().Pose(i).position();
       if(fabs(delta_rot) > cfg_->trajectory.min_resolution_collision_check_angular || delta_dist.norm() > inscribed_radius)
       {
+        // 计算需要插值的中间点数
         int n_additional_samples = std::max(std::ceil(fabs(delta_rot) / cfg_->trajectory.min_resolution_collision_check_angular), 
                                             std::ceil(delta_dist.norm() / inscribed_radius)) - 1;
         PoseSE2 intermediate_pose = teb().Pose(i);
+        // 插值位姿碰撞检测
         for(int step = 0; step < n_additional_samples; ++step)
         {
           intermediate_pose.position() = intermediate_pose.position() + delta_dist / (n_additional_samples + 1.0);
